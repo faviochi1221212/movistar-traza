@@ -1,0 +1,35 @@
+# Secretos / entornos locales (NUNCA subir: credenciales reales de Supabase y Dify)
+.env
+.env.*
+!.env.example
+backend/.env
+react-export/.env
+
+# Bases de datos locales / artefactos de ML que no deben versionarse
+*.db
+*.sqlite
+*.sqlite3
+*.pkl
+*.joblib
+*.joblib.bak*
+
+# Python
+__pycache__/
+backend/**/__pycache__/
+*.pyc
+backend/venv/
+backend/.venv/
+backend/.pytest_cache/
+backend/tests/.pytest_cache/
+
+# Node / frontend
+node_modules/
+react-export/node_modules/
+dist/
+react-export/dist/
+react-export/tsconfig.tsbuildinfo
+
+.DS_Store
+
+# Estado local del harness de Claude Code (no forma parte del proyecto)
+.claude/
