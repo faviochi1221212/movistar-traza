@@ -79,7 +79,11 @@ def _consultar_recupero(db: Session) -> tuple[str, dict]:
     return ctx, {"oportunidades": [dict(o) for o in ops]}
 
 
-CLIENTE_ID_PATTERN = r"CLIENTE[_ ]?DEMO[_ ]?\d+|\bruc\b|[0-9]{8,11}"
+# CLIENT_00081 es el formato real de los datos cargados (razon_social viene
+# directo de nombre_cliente en el CSV). CLIENTE_DEMO_007 era el formato
+# ficticio del mockup original -- se mantiene por compatibilidad, pero ya
+# no existe ningun cliente real con ese nombre.
+CLIENTE_ID_PATTERN = r"CLIENTE[_ ]?DEMO[_ ]?\d+|CLIENT[_ ]?\d+|\bruc\b|[0-9]{8,11}"
 
 # "cliente"/"clientes" aparece como palabra suelta en casi cualquier pregunta
 # agregada ("que CLIENTES tienen mayor riesgo?"), asi que esa categoria va al
