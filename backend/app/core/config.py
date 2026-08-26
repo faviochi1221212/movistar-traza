@@ -25,6 +25,16 @@ class Settings(BaseSettings):
     seed_data_dir: str = ""
 
     frontend_url: str = "http://localhost:5173"
+    # Lista adicional de origenes permitidos para CORS, separados por coma
+    # (ej. "https://movistar-traza.vercel.app,https://otro-dominio.com").
+    # Permite agregar dominios de produccion sin tocar codigo.
+    allowed_origins: str = ""
+
+    @property
+    def cors_allowed_origins(self) -> list[str]:
+        origins = {self.frontend_url}
+        origins.update(o.strip() for o in self.allowed_origins.split(",") if o.strip())
+        return list(origins)
 
     @property
     def dify_configurado(self) -> bool:

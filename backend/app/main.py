@@ -18,7 +18,9 @@ app = FastAPI(title="TRAZA API", version="0.1.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[settings.frontend_url],
+    # FRONTEND_URL (legacy) + ALLOWED_ORIGINS (lista separada por coma,
+    # para agregar dominios de produccion -ej. Vercel- sin tocar codigo).
+    allow_origins=settings.cors_allowed_origins,
     # Vite prueba puertos secuenciales (5173, 5174, ...) si el puerto por defecto
     # ya esta ocupado por otro proyecto local, asi que en desarrollo aceptamos
     # cualquier puerto de localhost/127.0.0.1 en vez de fijar uno solo.
