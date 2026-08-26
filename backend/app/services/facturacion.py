@@ -10,6 +10,7 @@ from decimal import Decimal
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.core import orchestrator
 from app.models.models import (
     CasoFacturacion, ClienteB2B, Conformidad, ConformidadEvento, CuentaB2B,
     FacturaB2B, PlantaFijaB2B, PlantaMovilB2B, TrazaCicloIngreso, ValidacionFacturacion,
@@ -39,8 +40,10 @@ def _crear_caso(db: Session, *, cliente_id, factura_id, tipo_caso, asunto, descr
     )
     db.add(caso)
     db.flush()
+    traza = orchestrator.get_or_create_traza(db, cliente_id, factura_id)
     audit.log(db, actor_tipo="AGENT", actor_id="FACTURACION", accion="CREAR_CASO_FACTURACION",
-               entidad_tipo="casos_facturacion", entidad_id=caso.id, after_data={"tipo_caso": tipo_caso, "asunto": asunto})
+               entidad_tipo="casos_facturacion", entidad_id=caso.id, after_data={"tipo_caso": tipo_caso, "asunto": asunto},
+               trace_id=traza.id)
     return caso
 
 
@@ -166,8 +169,9 @@ def crear_solicitud_conformidad(db: Session, factura: FacturaB2B) -> Conformidad
     db.add(ConformidadEvento(conformidad_id=conformidad.id, tipo_evento="ENVIADO", detalle="Solicitud de conformidad enviada al cliente."))
     factura.estado = "ESPERANDO_CONFORMIDAD"
     db.flush()
+    traza = orchestrator.get_or_create_traza(db, factura.cliente_id, factura.id)
     audit.log(db, actor_tipo="AGENT", actor_id="FACTURACION", accion="ENVIAR_SOLICITUD_CONFORMIDAD",
-               entidad_tipo="conformidades", entidad_id=conformidad.id)
+               entidad_tipo="conformidades", entidad_id=conformidad.id, trace_id=traza.id)
     return conformidad
 
 
@@ -175,7 +179,9 @@ def enviar_recordatorio(db: Session, conformidad: Conformidad) -> Conformidad:
     conformidad.ultimo_recordatorio_at = datetime.now(timezone.utc)
     db.add(ConformidadEvento(conformidad_id=conformidad.id, tipo_evento="RECORDATORIO", detalle="Recordatorio enviado al cliente."))
     db.flush()
-    audit.log(db, actor_tipo="USER", accion="ENVIAR_RECORDATORIO_CONFORMIDAD", entidad_tipo="conformidades", entidad_id=conformidad.id)
+    traza = orchestrator.get_or_create_traza(db, conformidad.cliente_id, conformidad.factura_id)
+    audit.log(db, actor_tipo="USER", accion="ENVIAR_RECORDATORIO_CONFORMIDAD", entidad_tipo="conformidades",
+               entidad_id=conformidad.id, trace_id=traza.id)
     return conformidad
 
 
@@ -192,8 +198,10 @@ def procesar_respuesta_conformidad(db: Session, conformidad: Conformidad, respue
     if factura:
         factura.estado = "APROBADO" if aprobado else "OBSERVADO"
     db.flush()
+    traza = orchestrator.get_or_create_traza(db, conformidad.cliente_id, conformidad.factura_id)
     audit.log(db, actor_tipo="USER", accion="PROCESAR_RESPUESTA_CONFORMIDAD",
-               entidad_tipo="conformidades", entidad_id=conformidad.id, after_data={"estado": conformidad.estado})
+               entidad_tipo="conformidades", entidad_id=conformidad.id, after_data={"estado": conformidad.estado},
+               trace_id=traza.id)
     return conformidad
 
 

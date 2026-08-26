@@ -134,9 +134,13 @@ def evaluar_match(db: Session, movimiento: MovimientoBancarioDemo) -> MatchBanca
     movimiento.estado = "IDENTIFICADO" if best["factura_id"] else movimiento.estado
     db.flush()
 
+    # Si el movimiento no encontro ningun candidato (SIN_MATCH sin cliente ni
+    # factura), no existe una traza logica a la que atarlo: queda aislado
+    # hasta que se identifique manualmente.
+    traza_id = orchestrator.get_or_create_traza(db, best["cliente_id"], best["factura_id"]).id if best["cliente_id"] else None
     audit.log(db, actor_tipo="AGENT", actor_id="COBRANZAS", accion="EVALUAR_MATCH_BANCARIO",
                entidad_tipo="matches_bancarios", entidad_id=match.id,
-               after_data={"tipo_match": tipo_match, "score": best["score"]})
+               after_data={"tipo_match": tipo_match, "score": best["score"]}, trace_id=traza_id)
     return match
 
 
@@ -211,8 +215,9 @@ def conciliar_match(db: Session, match: MatchBancario, *, metodo: str, usuario_i
 def rechazar_match(db: Session, match: MatchBancario, motivo: str) -> MatchBancario:
     match.estado = "RECHAZADO"
     db.flush()
+    traza_id = orchestrator.get_or_create_traza(db, match.cliente_id, match.factura_id).id if match.cliente_id else None
     audit.log(db, actor_tipo="USER", accion="RECHAZAR_MATCH_BANCARIO", entidad_tipo="matches_bancarios",
-               entidad_id=match.id, after_data={"motivo": motivo})
+               entidad_id=match.id, after_data={"motivo": motivo}, trace_id=traza_id)
     return match
 
 

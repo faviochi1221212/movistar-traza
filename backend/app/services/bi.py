@@ -104,8 +104,8 @@ def riesgo_resumen(db: Session) -> dict:
     return {"distribucion": distribucion, "total_evaluados": sum(distribucion.values()), "sin_historial": sin_historial}
 
 
-def top_riesgo(db: Session, limit: int = 20):
-    sql = text("""
+def top_riesgo(db: Session, limit: int = 20, nivel_riesgo: str | None = None):
+    sql = """
         SELECT r.cliente_id, c.razon_social, r.probabilidad_pago, r.nivel_riesgo, r.predicted_at,
                COALESCE(fs.saldo_total, 0) AS saldo_pendiente, COALESCE(fs.dias_max, 0) AS dias_vencidos
         FROM public.v_ml_riesgo_actual r
@@ -115,14 +115,21 @@ def top_riesgo(db: Session, limit: int = 20):
             FROM public.v_cartera_cobranza GROUP BY cliente_id
         ) fs ON fs.cliente_id = r.cliente_id
         WHERE EXISTS (SELECT 1 FROM public.facturas_b2b f WHERE f.cliente_id = r.cliente_id)
-        ORDER BY saldo_pendiente DESC, dias_vencidos DESC
-        LIMIT :limit
-    """)
-    return db.execute(sql, {"limit": limit}).mappings().all()
+    """
+    params: dict = {"limit": limit}
+    if nivel_riesgo and nivel_riesgo != "TODOS":
+        sql += " AND r.nivel_riesgo = :nivel_riesgo"
+        params["nivel_riesgo"] = nivel_riesgo
+    sql += " ORDER BY saldo_pendiente DESC, dias_vencidos DESC LIMIT :limit"
+    return db.execute(text(sql), params).mappings().all()
 
 
-def oportunidades_recupero(db: Session, limit: int = 30):
-    """saldo pendiente + aging + riesgo + facturas incumplidas -> prioridad de recupero."""
+def oportunidades_recupero(db: Session, limit: int = 30, prioridad: str | None = None):
+    """saldo pendiente + aging + riesgo + facturas incumplidas -> prioridad de recupero.
+
+    La prioridad se deriva en Python (no es una columna), asi que si se pide
+    filtrar por ella se trae un universo mas amplio de la query SQL y se
+    recorta a `limit` DESPUES de filtrar, no antes."""
     sql = text("""
         SELECT
           v.cliente_id, c.razon_social,
@@ -138,21 +145,24 @@ def oportunidades_recupero(db: Session, limit: int = 30):
         ORDER BY (SUM(v.saldo_pendiente) * (1 - COALESCE(r.probabilidad_pago, 0.5)) * (1 + MAX(v.dias_vencidos) / 90.0)) DESC
         LIMIT :limit
     """)
-    rows = db.execute(sql, {"limit": limit}).mappings().all()
+    query_limit = limit * 5 if prioridad and prioridad != "TODOS" else limit
+    rows = db.execute(sql, {"limit": query_limit}).mappings().all()
     mora_critica_dias = float(get_regla(db, "MORA_CRITICA_DIAS") or 60)
 
     oportunidades = []
     for row in rows:
         if row["dias_vencidos"] >= mora_critica_dias and row["nivel_riesgo"] == "ALTO":
-            prioridad, tipo, accion = "Alta", "Regularizacion de saldo vencido", "Evaluar acuerdo de regularizacion"
+            p, tipo, accion = "Alta", "Regularizacion de saldo vencido", "Evaluar acuerdo de regularizacion"
         elif row["nivel_riesgo"] == "ALTO":
-            prioridad, tipo, accion = "Alta", "Renegociacion preventiva", "Evaluar plan de pagos personalizado"
+            p, tipo, accion = "Alta", "Renegociacion preventiva", "Evaluar plan de pagos personalizado"
         elif row["dias_vencidos"] >= 30:
-            prioridad, tipo, accion = "Media", "Seguimiento prioritario", "Contacto por deuda vencida"
+            p, tipo, accion = "Media", "Seguimiento prioritario", "Contacto por deuda vencida"
         else:
-            prioridad, tipo, accion = "Baja", "Prevencion de mora", "Recordatorio preventivo"
-        oportunidades.append({**dict(row), "prioridad": prioridad, "oportunidad": tipo, "accion_sugerida": accion})
-    return oportunidades
+            p, tipo, accion = "Baja", "Prevencion de mora", "Recordatorio preventivo"
+        if prioridad and prioridad != "TODOS" and p != prioridad:
+            continue
+        oportunidades.append({**dict(row), "prioridad": p, "oportunidad": tipo, "accion_sugerida": accion})
+    return oportunidades[:limit]
 
 
 def resumen_general(db: Session) -> dict:

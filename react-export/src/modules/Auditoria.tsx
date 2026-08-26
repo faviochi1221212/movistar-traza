@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { colors, monoFont, tabStyle } from '../lib/styles';
 import { api, fechaHora } from '../lib/api';
 import Drawer from '../components/Drawer';
+import FilterSelect from '../components/FilterSelect';
 
 type Resumen = { eventos_registrados: number; acciones_ia_ejecutadas: number; revisiones_pendientes: number; alertas_criticas: number };
 type Evento = { id: number; trace_id: string | null; actor_tipo: string; actor_id: string | null; accion: string; entidad_tipo: string | null; entidad_id: string | null; created_at: string };
@@ -24,11 +25,13 @@ export default function Auditoria() {
   const [eventos, setEventos] = useState<Evento[]>([]);
   const [trazaId, setTrazaId] = useState<string | null>(null);
   const [traza, setTraza] = useState<any>(null);
+  const [filtroEntidad, setFiltroEntidad] = useState('TODOS');
 
   useEffect(() => {
     api.get<Resumen>('/api/auditoria/resumen').then(setResumen);
-    api.get<Evento[]>('/api/auditoria?limit=200').then(setEventos);
-  }, []);
+    const qs = filtroEntidad !== 'TODOS' ? `&entidad_tipo=${filtroEntidad}` : '';
+    api.get<Evento[]>(`/api/auditoria?limit=200${qs}`).then(setEventos);
+  }, [filtroEntidad]);
 
   useEffect(() => {
     if (trazaId) api.get(`/api/auditoria/${trazaId}`).then(setTraza).catch(() => setTraza(null));
@@ -60,7 +63,21 @@ export default function Auditoria() {
         </div>
       )}
 
-      {tab === 'trazas' && <EventosTabla eventos={eventos} onVerTraza={setTrazaId} />}
+      {tab === 'trazas' && (
+        <div>
+          <div style={{ marginBottom: 16 }}>
+            <FilterSelect label="Entidad" value={filtroEntidad} onChange={setFiltroEntidad} options={[
+              { value: 'TODOS', label: 'Todas' }, { value: 'casos_facturacion', label: 'Casos de facturación' },
+              { value: 'conformidades', label: 'Conformidades' }, { value: 'facturas_b2b', label: 'Facturas' },
+              { value: 'aplicaciones_pago', label: 'Aplicaciones de pago' }, { value: 'rebajas_documento', label: 'Rebajas' },
+              { value: 'conciliaciones', label: 'Conciliaciones' }, { value: 'matches_bancarios', label: 'Matches bancarios' },
+              { value: 'gestiones_cobranza', label: 'Gestiones de cobranza' }, { value: 'casos_cobranza', label: 'Casos de cobranza' },
+              { value: 'emails_cobranza', label: 'Correos' }, { value: 'business_rules', label: 'Reglas de negocio' },
+            ]} />
+          </div>
+          <EventosTabla eventos={eventos} onVerTraza={setTrazaId} />
+        </div>
+      )}
 
       <Drawer open={!!trazaId} onClose={() => { setTrazaId(null); setTraza(null); }} width={480} title="Reconstrucción de traza"
         subtitle={traza && <div style={{ ...monoFont, fontSize: 12.5, color: colors.textMuted }}>{traza.traza.correlation_id}</div>}>
@@ -96,7 +113,7 @@ function EventosTabla({ eventos, onVerTraza }: { eventos: Evento[]; onVerTraza: 
       <table style={{ width: '100%', borderCollapse: 'collapse' }}>
         <thead><tr style={{ background: '#F8FAFC' }}>
           <th style={th('left', 20)}>FECHA</th><th style={th('left')}>ACTOR</th><th style={th('left')}>ACCIÓN</th>
-          <th style={th('left')}>ENTIDAD</th><th style={th('right', 20)}>ACCIÓN</th>
+          <th style={th('left')}>ENTIDAD</th><th style={th('right', 20)}>DETALLE</th>
         </tr></thead>
         <tbody>
           {eventos.map((e) => (

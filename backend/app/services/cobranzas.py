@@ -10,6 +10,7 @@ from decimal import Decimal
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from app.core import orchestrator
 from app.integrations.dify import get_dify_classifier, normalizar_clasificacion
 from app.models.models import (
     CasoCobranza, ClienteB2B, EmailCobranza, FacturaB2B, GestionCobranza,
@@ -64,7 +65,9 @@ def registrar_gestion(db: Session, factura: FacturaB2B, *, notas: str | None = N
     gestion.estado = "EN_GESTION" if gestion.estado == "PENDIENTE" else gestion.estado
     gestion.fecha_ultima_gestion = datetime.now(timezone.utc)
     db.flush()
-    audit.log(db, actor_tipo="USER", accion="REGISTRAR_GESTION_COBRANZA", entidad_tipo="gestiones_cobranza", entidad_id=gestion.id)
+    traza = orchestrator.get_or_create_traza(db, factura.cliente_id, factura.id)
+    audit.log(db, actor_tipo="USER", accion="REGISTRAR_GESTION_COBRANZA", entidad_tipo="gestiones_cobranza",
+               entidad_id=gestion.id, trace_id=traza.id)
     return gestion
 
 
@@ -77,7 +80,9 @@ def registrar_promesa_pago(db: Session, factura: FacturaB2B, monto: Decimal, fec
     )
     db.add(promesa)
     db.flush()
-    audit.log(db, actor_tipo="USER", accion="REGISTRAR_PROMESA_PAGO", entidad_tipo="promesas_pago", entidad_id=promesa.id)
+    traza = orchestrator.get_or_create_traza(db, factura.cliente_id, factura.id)
+    audit.log(db, actor_tipo="USER", accion="REGISTRAR_PROMESA_PAGO", entidad_tipo="promesas_pago",
+               entidad_id=promesa.id, trace_id=traza.id)
     return promesa
 
 
@@ -103,8 +108,10 @@ def _crear_caso_cobranza(db: Session, *, cliente_id, factura_id=None, email_id=N
     )
     db.add(caso)
     db.flush()
+    traza = orchestrator.get_or_create_traza(db, cliente_id, factura_id)
     audit.log(db, actor_tipo="AGENT", actor_id="COBRANZAS", accion="CREAR_CASO_COBRANZA",
-               entidad_tipo="casos_cobranza", entidad_id=caso.id, after_data={"tipo_caso": tipo_caso})
+               entidad_tipo="casos_cobranza", entidad_id=caso.id, after_data={"tipo_caso": tipo_caso},
+               trace_id=traza.id)
     return caso
 
 
@@ -123,8 +130,12 @@ def clasificar_email(db: Session, email: EmailCobranza) -> EmailCobranza:
     email.procesado = True
     db.flush()
 
+    # email.cliente_id puede ser None si Dify no logro vincular el correo a
+    # un cliente conocido: en ese caso no hay una traza logica a la que
+    # atar el evento (seccion "si no existe un ID de traza logico").
+    traza_id = orchestrator.get_or_create_traza(db, email.cliente_id, email.factura_id).id if email.cliente_id else None
     audit.log(db, actor_tipo="AGENT", actor_id="COBRANZAS", accion="CLASIFICAR_EMAIL",
-               entidad_tipo="emails_cobranza", entidad_id=email.id, after_data=normalizado)
+               entidad_tipo="emails_cobranza", entidad_id=email.id, after_data=normalizado, trace_id=traza_id)
 
     if normalizado["clasificacion"] in ("RECLAMO", "CONSULTA", "NOTA_CREDITO") and email.cliente_id:
         _crear_caso_cobranza(
@@ -139,7 +150,9 @@ def corregir_clasificacion(db: Session, email: EmailCobranza, nueva_clasificacio
     anterior = email.clasificacion
     email.clasificacion = nueva_clasificacion
     db.flush()
+    traza_id = orchestrator.get_or_create_traza(db, email.cliente_id, email.factura_id).id if email.cliente_id else None
     audit.log(db, actor_tipo="USER", actor_id=usuario, accion="CORREGIR_CLASIFICACION_EMAIL",
                entidad_tipo="emails_cobranza", entidad_id=email.id,
-               before_data={"clasificacion": anterior}, after_data={"clasificacion": nueva_clasificacion})
+               before_data={"clasificacion": anterior}, after_data={"clasificacion": nueva_clasificacion},
+               trace_id=traza_id)
     return email

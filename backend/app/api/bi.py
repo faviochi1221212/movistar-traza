@@ -14,10 +14,10 @@ def resumen(db: Session = Depends(get_db)):
 
 
 @router.get("/riesgo")
-def riesgo(limit: int = 20, db: Session = Depends(get_db)):
+def riesgo(limit: int = 20, nivel_riesgo: str | None = None, db: Session = Depends(get_db)):
     return {
         "resumen": bi.riesgo_resumen(db),
-        "top_clientes": [to_jsonable(dict(r)) for r in bi.top_riesgo(db, limit=limit)],
+        "top_clientes": [to_jsonable(dict(r)) for r in bi.top_riesgo(db, limit=limit, nivel_riesgo=nivel_riesgo)],
     }
 
 
@@ -29,5 +29,5 @@ def recalcular(limit: int | None = None, db: Session = Depends(get_db)):
 
 
 @router.get("/recupero")
-def recupero(limit: int = 30, db: Session = Depends(get_db)):
-    return [to_jsonable(o) for o in bi.oportunidades_recupero(db, limit=limit)]
+def recupero(limit: int = 30, prioridad: str | None = None, db: Session = Depends(get_db)):
+    return [to_jsonable(o) for o in bi.oportunidades_recupero(db, limit=limit, prioridad=prioridad)]

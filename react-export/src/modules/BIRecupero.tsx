@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { colors, monoFont, tabStyle, priorityStyle } from '../lib/styles';
 import { api, money } from '../lib/api';
+import FilterSelect from '../components/FilterSelect';
 
 type ResumenGeneral = {
   facturacion: { monto_facturado: number };
@@ -48,13 +49,21 @@ export default function BIRecupero() {
   const [chatMsgs, setChatMsgs] = useState<{ role: 'user' | 'ai'; text: string }[]>([]);
   const [chatInput, setChatInput] = useState('');
   const [chatLoading, setChatLoading] = useState(false);
+  const [filtroNivelRiesgo, setFiltroNivelRiesgo] = useState('TODOS');
+  const [filtroPrioridad, setFiltroPrioridad] = useState('TODOS');
 
   useEffect(() => {
     api.get<ResumenGeneral>('/api/bi/resumen').then(setResumen);
     api.get<CarteraRow[]>('/api/cobranzas/cartera?limit=500').then(setCartera);
-    api.get('/api/bi/riesgo?limit=20').then(setRiesgo as any);
-    api.get<Oportunidad[]>('/api/bi/recupero?limit=30').then(setOportunidades);
   }, []);
+
+  useEffect(() => {
+    api.get(`/api/bi/riesgo?limit=20&nivel_riesgo=${filtroNivelRiesgo}`).then(setRiesgo as any);
+  }, [filtroNivelRiesgo]);
+
+  useEffect(() => {
+    api.get<Oportunidad[]>(`/api/bi/recupero?limit=30&prioridad=${filtroPrioridad}`).then(setOportunidades);
+  }, [filtroPrioridad]);
 
   const porAging = useMemo(() => {
     const acc: Record<string, number> = {};
@@ -163,6 +172,12 @@ export default function BIRecupero() {
             </div>
           )}
 
+          <div style={{ marginBottom: 16 }}>
+            <FilterSelect label="Nivel de riesgo" value={filtroNivelRiesgo} onChange={setFiltroNivelRiesgo} options={[
+              { value: 'TODOS', label: 'Todos' }, { value: 'ALTO', label: 'Alto' }, { value: 'MEDIO', label: 'Medio' }, { value: 'BAJO', label: 'Bajo' },
+            ]} />
+          </div>
+
           <div style={{ background: '#fff', border: `1px solid ${colors.border}`, borderRadius: 10, overflow: 'hidden' }}>
             <div style={{ padding: '16px 20px', borderBottom: `1px solid ${colors.border}`, fontSize: 14.5, fontWeight: 600, color: colors.textStrong }}>Clientes con mayor riesgo (ordenado por saldo pendiente y días vencidos)</div>
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
@@ -192,6 +207,12 @@ export default function BIRecupero() {
             <KpiIcon label="Oportunidades detectadas" value={String(oportunidades.length)} bg={colors.blueBg} border={colors.blue} />
             <KpiIcon label="Impacto estimado" value={money(oportunidades.reduce((s, o) => s + Number(o.saldo_pendiente), 0))} bg={colors.greenBg} border={colors.green} />
             <KpiIcon label="Prioridad alta" value={String(oportunidades.filter((o) => o.prioridad === 'Alta').length)} bg={colors.amberBg} border={colors.amber} />
+          </div>
+
+          <div style={{ marginBottom: 16 }}>
+            <FilterSelect label="Prioridad" value={filtroPrioridad} onChange={setFiltroPrioridad} options={[
+              { value: 'TODOS', label: 'Todas' }, { value: 'Alta', label: 'Alta' }, { value: 'Media', label: 'Media' }, { value: 'Baja', label: 'Baja' },
+            ]} />
           </div>
 
           <div style={{ background: '#fff', border: `1px solid ${colors.border}`, borderRadius: 10, overflow: 'hidden' }}>

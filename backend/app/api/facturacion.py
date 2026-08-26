@@ -136,14 +136,13 @@ def respuesta_conformidad(conformidad_id: str, body: RespuestaConformidadBody, d
 
 
 @router.get("/emision")
-def emision(db: Session = Depends(get_db)):
-    facturas = (
-        db.query(FacturaB2B)
-        .filter(FacturaB2B.estado.in_(["VALIDANDO", "APROBADO", "ESPERANDO_CONFORMIDAD", "SIN_RESPUESTA", "OBSERVADO", "GENERADO", "LISTO_EMISION"]))
-        .order_by(FacturaB2B.fecha_vencimiento.asc())
-        .limit(100)
-        .all()
+def emision(tipo_factura: str | None = None, db: Session = Depends(get_db)):
+    q = db.query(FacturaB2B).filter(
+        FacturaB2B.estado.in_(["VALIDANDO", "APROBADO", "ESPERANDO_CONFORMIDAD", "SIN_RESPUESTA", "OBSERVADO", "GENERADO", "LISTO_EMISION"])
     )
+    if tipo_factura and tipo_factura != "TODOS":
+        q = q.filter(FacturaB2B.tipo_factura == tipo_factura)
+    facturas = q.order_by(FacturaB2B.fecha_vencimiento.asc()).limit(100).all()
     out = []
     for f in facturas:
         conformidad = db.query(Conformidad).filter(Conformidad.factura_id == f.id).first()

@@ -79,14 +79,20 @@ def _consultar_recupero(db: Session) -> tuple[str, dict]:
     return ctx, {"oportunidades": [dict(o) for o in ops]}
 
 
+CLIENTE_ID_PATTERN = r"CLIENTE[_ ]?DEMO[_ ]?\d+|\bruc\b|[0-9]{8,11}"
+
+# "cliente"/"clientes" aparece como palabra suelta en casi cualquier pregunta
+# agregada ("que CLIENTES tienen mayor riesgo?"), asi que esa categoria va al
+# final y solo dispara si hay un identificador real de cliente (RUC o
+# CLIENTE_DEMO_x) en el texto -- nunca por la palabra generica sola.
 _RULES = [
-    (re.compile(r"cliente|CLIENTE_DEMO|ruc", re.I), "cliente"),
-    (re.compile(r"cartera|vencid|cobrad|ratio", re.I), "cartera"),
+    (re.compile(r"cartera|vencid|cobrad|ratio|mora", re.I), "cartera"),
     (re.compile(r"riesgo|predic", re.I), "riesgo"),
     (re.compile(r"conciliaci|movimiento banc|manual", re.I), "conciliacion"),
     (re.compile(r"recuper|oportunidad", re.I), "recupero"),
     (re.compile(r"auditor|decisi[oó]n|traza", re.I), "auditoria"),
     (re.compile(r"factura|conformidad|emisi[oó]n|validaci", re.I), "facturacion"),
+    (re.compile(CLIENTE_ID_PATTERN, re.I), "cliente"),
 ]
 
 
@@ -103,7 +109,7 @@ def responder(db: Session, pregunta: str) -> dict:
         return {"respuesta": FUERA_DE_ALCANCE, "categoria": None, "datos": {}}
 
     if categoria == "cliente":
-        match = re.search(r"CLIENTE[_ ]?DEMO[_ ]?\d+|[0-9]{8,11}", pregunta, re.I)
+        match = re.search(CLIENTE_ID_PATTERN, pregunta, re.I)
         texto = match.group(0) if match else pregunta
         contexto, datos = _consultar_cliente(db, texto)
     else:

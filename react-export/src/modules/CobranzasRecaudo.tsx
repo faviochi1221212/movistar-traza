@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { colors, monoFont, pagoProbStyle, tabStyle } from '../lib/styles';
 import { api, fecha, fechaHora, money } from '../lib/api';
 import Drawer from '../components/Drawer';
+import FilterSelect from '../components/FilterSelect';
 
 type Resumen = { cartera_pendiente: number; cartera_vencida: number; ratio_cobrado_facturado: number; clientes_riesgo_alto: number; facturas_en_cartera: number };
 type CarteraRow = { factura_id: string; numero: string; cliente_id: string; razon_social: string; saldo_pendiente: number; fecha_vencimiento: string; dias_vencidos: number; aging: string; estado_pago: string };
@@ -50,14 +51,18 @@ export default function CobranzasRecaudo() {
   const [emailSeleccionado, setEmailSeleccionado] = useState<Email | null>(null);
   const [movSeleccionado, setMovSeleccionado] = useState<string | null>(null);
 
+  const [filtroAging, setFiltroAging] = useState('TODOS');
+  const [filtroClasificacion, setFiltroClasificacion] = useState('TODOS');
+  const [filtroEstadoMov, setFiltroEstadoMov] = useState('TODOS');
+
   const cargar = () => {
     api.get<Resumen>('/api/cobranzas/resumen').then(setResumen);
-    api.get<CarteraRow[]>('/api/cobranzas/cartera?limit=100').then(setCartera);
-    api.get<Email[]>('/api/cobranzas/emails?limit=50').then(setEmails);
+    api.get<CarteraRow[]>(`/api/cobranzas/cartera?limit=100&aging=${filtroAging}`).then(setCartera);
+    api.get<Email[]>(`/api/cobranzas/emails?limit=50&clasificacion=${filtroClasificacion}`).then(setEmails);
     api.get<Caso[]>('/api/cobranzas/casos').then(setCasos);
-    api.get<Movimiento[]>('/api/recaudo/movimientos?limit=100').then(setMovimientos);
+    api.get<Movimiento[]>(`/api/recaudo/movimientos?limit=100&estado=${filtroEstadoMov}`).then(setMovimientos);
   };
-  useEffect(() => { cargar(); }, []);
+  useEffect(() => { cargar(); }, [filtroAging, filtroClasificacion, filtroEstadoMov]);
 
   return (
     <div>
@@ -105,6 +110,13 @@ export default function CobranzasRecaudo() {
 
       {tab === 'gestion' && (
         <div>
+          <div style={{ marginBottom: 16 }}>
+            <FilterSelect label="Antigüedad (aging)" value={filtroAging} onChange={setFiltroAging} options={[
+              { value: 'TODOS', label: 'Todos' }, { value: 'POR_VENCER', label: 'Por vencer' },
+              { value: '0_30', label: '0-30 días' }, { value: '31_60', label: '31-60 días' },
+              { value: '61_90', label: '61-90 días' }, { value: 'MAS_90', label: '+90 días' },
+            ]} />
+          </div>
           <div style={{ background: '#fff', border: `1px solid ${colors.border}`, borderRadius: 10, overflow: 'hidden' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
               <thead><tr style={{ background: '#F8FAFC' }}>
@@ -134,7 +146,12 @@ export default function CobranzasRecaudo() {
 
       {tab === 'bandeja' && (
         <div>
-          <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 14 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 14 }}>
+            <FilterSelect label="Clasificación" value={filtroClasificacion} onChange={setFiltroClasificacion} options={[
+              { value: 'TODOS', label: 'Todos' }, { value: 'CONFIRMACION_PAGO', label: 'Confirmación de pago' },
+              { value: 'PROMESA_PAGO', label: 'Promesa de pago' }, { value: 'CONSULTA', label: 'Consulta' },
+              { value: 'RECLAMO', label: 'Reclamo' }, { value: 'NOTA_CREDITO', label: 'Nota de crédito' }, { value: 'OTRO', label: 'Otro' },
+            ]} />
             <button onClick={() => api.post('/api/cobranzas/procesar-lote').then(cargar)} style={btnLight}>Clasificar pendientes</button>
           </div>
           <div style={{ background: '#fff', border: `1px solid ${colors.border}`, borderRadius: 10, overflow: 'hidden' }}>
@@ -171,6 +188,13 @@ export default function CobranzasRecaudo() {
             <button onClick={() => api.post('/api/recaudo/procesar-lote').then(cargar)} style={{ ...btnDark, height: 36, marginLeft: 16 }}>Conciliar automáticos</button>
           </div>
 
+          <div style={{ marginBottom: 16 }}>
+            <FilterSelect label="Estado" value={filtroEstadoMov} onChange={setFiltroEstadoMov} options={[
+              { value: 'TODOS', label: 'Todos' }, { value: 'PENDIENTE', label: 'Pendiente' },
+              { value: 'IDENTIFICADO', label: 'Identificado' }, { value: 'CONCILIADO', label: 'Conciliado' },
+              { value: 'DESCARTADO', label: 'Descartado' },
+            ]} />
+          </div>
           <div style={{ background: '#fff', border: `1px solid ${colors.border}`, borderRadius: 10, overflow: 'hidden' }}>
             <div style={{ padding: '16px 20px', borderBottom: `1px solid ${colors.border}`, fontSize: 14.5, fontWeight: 600, color: colors.textStrong }}>Movimientos bancarios (fuente simulada del MVP)</div>
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>

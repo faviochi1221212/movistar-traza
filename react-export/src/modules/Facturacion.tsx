@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { colors, monoFont, priorityStyle, tabStyle } from '../lib/styles';
 import { api, fecha, fechaHora, money } from '../lib/api';
 import Drawer from '../components/Drawer';
+import FilterSelect from '../components/FilterSelect';
 
 type Resumen = {
   validacion: { correctas: number; en_revision: number; total: number };
@@ -55,21 +56,25 @@ export default function Facturacion() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const [filtroResultado, setFiltroResultado] = useState('TODOS');
+  const [filtroEstadoCaso, setFiltroEstadoCaso] = useState('TODOS');
+  const [filtroTipoFactura, setFiltroTipoFactura] = useState('TODOS');
+
   const cargar = () => {
     setLoading(true);
     setError(null);
     Promise.all([
       api.get<Resumen>('/api/facturacion/resumen'),
-      api.get<Caso[]>('/api/facturacion/casos'),
-      api.get<Validacion[]>('/api/facturacion/validaciones?limit=100'),
-      api.get<Emision[]>('/api/facturacion/emision'),
+      api.get<Caso[]>(`/api/facturacion/casos?estado=${filtroEstadoCaso}`),
+      api.get<Validacion[]>(`/api/facturacion/validaciones?limit=100&resultado=${filtroResultado}`),
+      api.get<Emision[]>(`/api/facturacion/emision?tipo_factura=${filtroTipoFactura}`),
     ])
       .then(([r, c, v, e]) => { setResumen(r); setCasos(c); setValidaciones(v); setEmision(e); })
       .catch((err) => setError(String(err)))
       .finally(() => setLoading(false));
   };
 
-  useEffect(cargar, []);
+  useEffect(cargar, [filtroResultado, filtroEstadoCaso, filtroTipoFactura]);
 
   const onReview = (c: Caso) => {
     if (c.factura_id) { setConformidadFacturaId(c.factura_id); setTab('conformidad'); }
@@ -172,7 +177,14 @@ export default function Facturacion() {
       )}
 
       {tab === 'validaciones' && (
-        <div style={{ background: '#fff', border: `1px solid ${colors.border}`, borderRadius: 10, overflow: 'hidden' }}>
+        <div>
+          <div style={{ marginBottom: 16 }}>
+            <FilterSelect label="Resultado" value={filtroResultado} onChange={setFiltroResultado} options={[
+              { value: 'TODOS', label: 'Todos' }, { value: 'CORRECTO', label: 'Correcto' },
+              { value: 'OBSERVACION', label: 'Observación' }, { value: 'ERROR', label: 'Error' },
+            ]} />
+          </div>
+          <div style={{ background: '#fff', border: `1px solid ${colors.border}`, borderRadius: 10, overflow: 'hidden' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead>
               <tr style={{ background: '#F8FAFC' }}>
@@ -196,12 +208,21 @@ export default function Facturacion() {
               {validaciones.length === 0 && <tr><td style={{ padding: 20, color: colors.textFaint, fontSize: 13 }} colSpan={5}>Aún no se han ejecutado validaciones. Usa "Ejecutar validaciones".</td></tr>}
             </tbody>
           </table>
+          </div>
         </div>
       )}
 
       {tab === 'casos' && (
-        <div style={{ background: '#fff', border: `1px solid ${colors.border}`, borderRadius: 10, overflow: 'hidden' }}>
-          <div style={{ padding: '16px 20px', borderBottom: `1px solid ${colors.border}`, fontSize: 14.5, fontWeight: 600, color: colors.textStrong }}>Casos pendientes de revisión ({casos.length})</div>
+        <div>
+          <div style={{ marginBottom: 16 }}>
+            <FilterSelect label="Estado" value={filtroEstadoCaso} onChange={setFiltroEstadoCaso} options={[
+              { value: 'TODOS', label: 'Abiertos y en revisión' }, { value: 'ABIERTO', label: 'Abierto' },
+              { value: 'EN_REVISION', label: 'En revisión' }, { value: 'RESUELTO', label: 'Resuelto' },
+              { value: 'DESCARTADO', label: 'Descartado' },
+            ]} />
+          </div>
+          <div style={{ background: '#fff', border: `1px solid ${colors.border}`, borderRadius: 10, overflow: 'hidden' }}>
+          <div style={{ padding: '16px 20px', borderBottom: `1px solid ${colors.border}`, fontSize: 14.5, fontWeight: 600, color: colors.textStrong }}>Casos ({casos.length})</div>
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead>
               <tr style={{ background: '#F8FAFC' }}>
@@ -228,6 +249,7 @@ export default function Facturacion() {
               ))}
             </tbody>
           </table>
+          </div>
         </div>
       )}
 
@@ -237,6 +259,11 @@ export default function Facturacion() {
 
       {tab === 'emision' && (
         <div>
+          <div style={{ marginBottom: 16 }}>
+            <FilterSelect label="Tipo de factura" value={filtroTipoFactura} onChange={setFiltroTipoFactura} options={[
+              { value: 'TODOS', label: 'Todos' }, { value: 'CICLICA', label: 'Cíclica' }, { value: 'ACICLICA', label: 'Acíclica' },
+            ]} />
+          </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 16, marginBottom: 18 }}>
             <KpiIcon label="Cíclicas listas para emitir" value={emision.filter((e) => e.tipo_factura === 'CICLICA' && e.puede_emitir).length} bg={colors.greenBg} border={colors.green} />
             <KpiIcon label="Acíclicas aprobadas" value={emision.filter((e) => e.tipo_factura === 'ACICLICA' && e.puede_emitir).length} bg={colors.blueBg} border={colors.blue} />
