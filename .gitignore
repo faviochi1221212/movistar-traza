@@ -34,6 +34,8 @@ react-export/node_modules/
 dist/
 react-export/dist/
 react-export/tsconfig.tsbuildinfo
+react-export/test-results/
+react-export/playwright-report/
 
 .DS_Store
 
