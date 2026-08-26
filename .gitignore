@@ -5,13 +5,19 @@
 backend/.env
 react-export/.env
 
-# Bases de datos locales / artefactos de ML que no deben versionarse
+# Bases de datos locales que no deben versionarse
 *.db
 *.sqlite
 *.sqlite3
+
+# Artefactos de ML: por defecto no se versionan (pueden ser privados/pesados),
+# EXCEPTO el modelo oficial del MVP en app/ml/models/, que se necesita en el
+# repo para que el deploy (Render) pueda cargarlo sin depender de una ruta
+# local fuera del repositorio.
 *.pkl
 *.joblib
 *.joblib.bak*
+!backend/app/ml/models/*.pkl
 
 # Python
 __pycache__/

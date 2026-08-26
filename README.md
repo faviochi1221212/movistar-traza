@@ -54,6 +54,15 @@ backend/           FastAPI: api/, services/, models/, integrations/, ml/, core/,
 
 Ver `ARCHITECTURE.md`, `DATA_MODEL.md`, `AGENTS.md`, `API.md` para el detalle técnico, `SECURITY.md` para la higiene mínima aplicada y `DEMO_GUIDE.md` para el recorrido de la demo.
 
+## Deploy en Render — version de Python
+
+Los servicios de Render creados desde el 11 de febrero de 2026 usan Python 3.14 por defecto, para el cual `pydantic-core` (dependencia de `pydantic`/`pydantic-settings`) todavia no publica wheel precompilado — el build falla intentando compilarlo desde fuente (falta el toolchain de Rust). El repo fija `3.11.10` (el default historico de Render, con wheels solidos para todas las dependencias) de dos formas redundantes:
+
+- `.python-version` en la raiz del repo y en `backend/.python-version`.
+- Configura ademas `PYTHON_VERSION=3.11.10` como variable de entorno en el dashboard de Render (metodo de mayor precedencia segun la documentacion de Render, y no depende de si el Root Directory del servicio afecta donde se busca `.python-version`).
+
+No uses `runtime.txt`: ya no esta soportado por Render.
+
 ## Bloqueos externos conocidos (no dependen de este código)
 
 - **Dify**: las dos apps de Dify Cloud del proyecto (clasificador y asistente) devuelven intermitentemente `400 "Model is not configured"` — es una configuración pendiente del lado del panel de Dify Cloud (seleccionar el modelo LLM en cada app), no un bug del backend. El backend ya maneja este caso: si Dify falla, el correo queda `procesado=false` (pendiente de revisión manual) y el asistente cae a una respuesta generada localmente con datos reales, en vez de romper la demo.

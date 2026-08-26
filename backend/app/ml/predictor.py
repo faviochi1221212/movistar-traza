@@ -8,12 +8,24 @@ Features y orden confirmados desde features_riesgo_cliente_traza.pkl:
 import logging
 import math
 from functools import lru_cache
+from pathlib import Path
 
 import joblib
 
 from app.core.config import get_settings
 
 logger = logging.getLogger(__name__)
+
+# backend/app/ml/predictor.py -> parents[2] == backend/
+BACKEND_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _resolve_path(raw_path: str) -> str:
+    """Las rutas relativas del .env se resuelven contra backend/, sin
+    importar desde que carpeta se haya lanzado el proceso (Render arranca
+    uvicorn con distintos working directories segun el buildpack)."""
+    path = Path(raw_path)
+    return str(path if path.is_absolute() else BACKEND_ROOT / path)
 
 
 class PaymentRiskPredictor:
@@ -51,10 +63,12 @@ def get_predictor() -> PaymentRiskPredictor | None:
     settings = get_settings()
     if not settings.ml_model_path or not settings.ml_features_path:
         return None
+    model_path = _resolve_path(settings.ml_model_path)
+    features_path = _resolve_path(settings.ml_features_path)
     try:
-        return PaymentRiskPredictor(settings.ml_model_path, settings.ml_features_path)
+        return PaymentRiskPredictor(model_path, features_path)
     except Exception:
-        logger.exception("No se pudo cargar el modelo ML en %s", settings.ml_model_path)
+        logger.exception("No se pudo cargar el modelo ML en %s", model_path)
         return None
 
 
