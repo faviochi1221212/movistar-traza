@@ -1,3 +1,6 @@
+from datetime import datetime
+from decimal import Decimal
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session, joinedload
@@ -17,16 +20,69 @@ def resumen(db: Session = Depends(get_db)):
 
 @router.get("/validaciones")
 def validaciones(resultado: str | None = None, limit: int = 50, offset: int = 0, db: Session = Depends(get_db)):
-    q = db.query(ValidacionFacturacion, ClienteB2B.razon_social).join(ClienteB2B, ValidacionFacturacion.cliente_id == ClienteB2B.id)
+    q = (
+        db.query(ValidacionFacturacion, ClienteB2B.razon_social, FacturaB2B.numero)
+        .join(ClienteB2B, ValidacionFacturacion.cliente_id == ClienteB2B.id)
+        .outerjoin(FacturaB2B, ValidacionFacturacion.factura_id == FacturaB2B.id)
+    )
     if resultado and resultado != "TODOS":
         q = q.filter(ValidacionFacturacion.resultado == resultado)
     rows = q.order_by(ValidacionFacturacion.created_at.desc()).offset(offset).limit(limit).all()
     out = []
-    for v, razon_social in rows:
+    for v, razon_social, factura_numero in rows:
         d = model_to_dict(v)
         d["cliente_nombre"] = razon_social
+        d["factura_numero"] = factura_numero
         out.append(d)
     return out
+
+
+@router.get("/facturas/{factura_id}")
+def factura_detalle(factura_id: str, db: Session = Depends(get_db)):
+    factura = db.query(FacturaB2B).options(joinedload(FacturaB2B.cliente)).get(factura_id)
+    if not factura:
+        raise HTTPException(404, "Factura no encontrada")
+    conformidad = db.query(Conformidad).filter(Conformidad.factura_id == factura.id).first()
+    validaciones_factura = (
+        db.query(ValidacionFacturacion)
+        .filter(ValidacionFacturacion.factura_id == factura.id)
+        .order_by(ValidacionFacturacion.created_at.asc())
+        .all()
+    )
+    d = model_to_dict(factura)
+    d["cliente_nombre"] = factura.cliente.razon_social if factura.cliente else None
+    d["conformidad_estado"] = conformidad.estado if conformidad else "NO_APLICA"
+    d["validaciones"] = [model_to_dict(v) for v in validaciones_factura]
+    return d
+
+
+class CrearFacturaCorreoBody(BaseModel):
+    cliente_nombre: str
+    ruc: str
+    monto: float
+    servicio: str | None = None
+    periodo: str | None = None
+    orden: str | None = None
+    fecha_emision: str | None = None  # "DD/MM/YYYY"
+    tipo_factura: str = "ACICLICA"
+
+
+@router.post("/facturas/desde-correo")
+def crear_factura_desde_correo(body: CrearFacturaCorreoBody, db: Session = Depends(get_db)):
+    fecha = None
+    if body.fecha_emision:
+        try:
+            fecha = datetime.strptime(body.fecha_emision, "%d/%m/%Y").date()
+        except ValueError:
+            fecha = None
+    tipo_factura = body.tipo_factura if body.tipo_factura in ("CICLICA", "ACICLICA") else "ACICLICA"
+    factura = facturacion.crear_factura_desde_correo(
+        db, cliente_nombre=body.cliente_nombre, ruc=body.ruc, monto=Decimal(str(body.monto)),
+        servicio=body.servicio, periodo=body.periodo, orden=body.orden,
+        fecha_emision=fecha, tipo_factura=tipo_factura,
+    )
+    db.commit()
+    return {"factura_id": str(factura.id), "factura_numero": factura.numero, "cliente_nombre": body.cliente_nombre}
 
 
 @router.get("/casos")
@@ -37,13 +93,62 @@ def casos(estado: str | None = None, limit: int = 50, offset: int = 0, db: Sessi
     else:
         q = q.filter(CasoFacturacion.estado.in_(["ABIERTO", "EN_REVISION"]))
     rows = q.order_by(CasoFacturacion.prioridad.desc(), CasoFacturacion.created_at.desc()).offset(offset).limit(limit).all()
+
+    # Los casos SERVICIO_ACTIVO_SIN_FACTURACION no tienen factura (el problema es
+    # justamente la ausencia de facturacion), asi que su "fuente" real es de donde
+    # proviene el servicio activo detectado: Planta Fija o Planta Movil.
+    sin_factura_ids = list({c.cliente_id for c in rows if not c.factura_id})
+    fija_ids: set = set()
+    movil_ids: set = set()
+    if sin_factura_ids:
+        from app.models.models import PlantaFijaB2B, PlantaMovilB2B
+        fija_ids = {r[0] for r in db.query(PlantaFijaB2B.cliente_id).filter(
+            PlantaFijaB2B.cliente_id.in_(sin_factura_ids), PlantaFijaB2B.status_desc == "Active").all()}
+        movil_ids = {r[0] for r in db.query(PlantaMovilB2B.cliente_id).filter(
+            PlantaMovilB2B.cliente_id.in_(sin_factura_ids), PlantaMovilB2B.estado_linea == "Active").all()}
+
     result = []
     for c in rows:
         d = model_to_dict(c)
         d["cliente_nombre"] = c.cliente.razon_social if c.cliente else None
         d["factura_numero"] = c.factura.numero if c.factura else None
+        if c.factura:
+            d["factura_fuente"] = c.factura.fuente
+        elif c.cliente_id in fija_ids and c.cliente_id in movil_ids:
+            d["factura_fuente"] = "PLANTA_FIJA_Y_MOVIL"
+        elif c.cliente_id in fija_ids:
+            d["factura_fuente"] = "PLANTA_FIJA"
+        elif c.cliente_id in movil_ids:
+            d["factura_fuente"] = "PLANTA_MOVIL"
+        else:
+            d["factura_fuente"] = None
         result.append(d)
     return result
+
+
+@router.get("/comunicaciones")
+def comunicaciones(db: Session = Depends(get_db)):
+    """Reclamos/consultas relacionados con facturas de Facturacion, provenientes
+    de las comunicaciones que clasifica el Agente de Cobranzas (mismo dominio
+    de facturas B2B, seccion 11/16 del prompt de rediseno de Emision)."""
+    from app.models.models import EmailCobranza
+
+    rows = (
+        db.query(EmailCobranza, ClienteB2B.razon_social, FacturaB2B.numero)
+        .join(FacturaB2B, EmailCobranza.factura_id == FacturaB2B.id)
+        .outerjoin(ClienteB2B, EmailCobranza.cliente_id == ClienteB2B.id)
+        .filter(EmailCobranza.clasificacion.in_(["RECLAMO", "CONSULTA", "NOTA_CREDITO"]))
+        .order_by(EmailCobranza.recibido_at.desc())
+        .limit(200)
+        .all()
+    )
+    out = []
+    for e, razon_social, factura_numero in rows:
+        out.append({
+            "id": str(e.id), "cliente_nombre": razon_social, "factura_numero": factura_numero,
+            "clasificacion": e.clasificacion, "asunto": e.asunto, "recibido_at": to_jsonable(e.recibido_at),
+        })
+    return out
 
 
 @router.get("/casos/{caso_id}")

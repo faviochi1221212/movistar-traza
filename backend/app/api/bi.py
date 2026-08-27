@@ -31,3 +31,8 @@ def recalcular(limit: int | None = None, db: Session = Depends(get_db)):
 @router.get("/recupero")
 def recupero(limit: int = 30, prioridad: str | None = None, db: Session = Depends(get_db)):
     return [to_jsonable(o) for o in bi.oportunidades_recupero(db, limit=limit, prioridad=prioridad)]
+
+
+@router.get("/tendencia")
+def tendencia(db: Session = Depends(get_db)):
+    return to_jsonable(bi.tendencia_cobranza(db))

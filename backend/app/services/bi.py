@@ -165,6 +165,52 @@ def oportunidades_recupero(db: Session, limit: int = 30, prioridad: str | None =
     return oportunidades[:limit]
 
 
+TENDENCIA_SQL = text("""
+WITH meses AS (
+  SELECT generate_series(date_trunc('month', now()) - interval '5 months', date_trunc('month', now()), interval '1 month')::date AS mes
+),
+facturado AS (
+  SELECT date_trunc('month', fecha_emision)::date AS mes, SUM(monto) AS monto_facturado
+  FROM public.facturas_b2b
+  WHERE fecha_emision >= date_trunc('month', now()) - interval '5 months'
+  GROUP BY 1
+),
+cobrado AS (
+  SELECT date_trunc('month', p.fecha_pago)::date AS mes, SUM(ap.monto_aplicado) AS monto_cobrado
+  FROM public.aplicaciones_pago ap
+  JOIN public.pagos_b2b p ON p.id = ap.pago_id
+  WHERE p.fecha_pago >= date_trunc('month', now()) - interval '5 months'
+  GROUP BY 1
+)
+SELECT m.mes, COALESCE(f.monto_facturado, 0) AS monto_facturado, COALESCE(c.monto_cobrado, 0) AS monto_cobrado
+FROM meses m
+LEFT JOIN facturado f ON f.mes = m.mes
+LEFT JOIN cobrado c ON c.mes = m.mes
+ORDER BY m.mes
+""")
+
+
+def tendencia_cobranza(db: Session) -> dict:
+    """Evolucion mensual real (ultimos 6 meses) del ratio cobrado/facturado,
+    mas el periodo medio de cobro (dias entre emision y pago aplicado)."""
+    rows = db.execute(TENDENCIA_SQL).mappings().all()
+    meses = []
+    for r in rows:
+        facturado = float(r["monto_facturado"])
+        cobrado = float(r["monto_cobrado"])
+        ratio = round(cobrado / facturado, 4) if facturado > 0 else 0.0
+        meses.append({"mes": r["mes"].isoformat(), "monto_facturado": facturado, "monto_cobrado": cobrado, "ratio_cobrado_facturado": ratio})
+
+    periodo_medio = db.execute(text("""
+        SELECT AVG(p.fecha_pago - f.fecha_emision)
+        FROM public.aplicaciones_pago ap
+        JOIN public.pagos_b2b p ON p.id = ap.pago_id
+        JOIN public.facturas_b2b f ON f.id = ap.factura_id
+    """)).scalar()
+
+    return {"meses": meses, "periodo_medio_cobro_dias": round(float(periodo_medio), 1) if periodo_medio is not None else None}
+
+
 def resumen_general(db: Session) -> dict:
     facturado = db.execute(text("SELECT COALESCE(SUM(monto),0) FROM public.facturas_b2b WHERE estado='EMITIDO'")).scalar() or 0
     cartera = db.execute(text("SELECT COALESCE(SUM(saldo_pendiente),0) FROM public.v_facturas_saldo WHERE estado_facturacion='EMITIDO'")).scalar() or 0

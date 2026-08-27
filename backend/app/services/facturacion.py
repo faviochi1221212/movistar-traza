@@ -4,7 +4,7 @@ APROBADO en una factura es conformidad de Facturacion; nunca significa pagada
 (seccion 9/10 del prompt maestro). El pago real vive en pagos_b2b +
 conciliaciones + aplicaciones_pago (services/conciliacion.py).
 """
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
 from sqlalchemy import func
@@ -99,6 +99,53 @@ def validar_factura(db: Session, factura: FacturaB2B, cliente: ClienteB2B) -> li
             )
     db.flush()
     return resultados
+
+
+def crear_factura_desde_correo(
+    db: Session,
+    *,
+    cliente_nombre: str,
+    ruc: str,
+    monto: Decimal,
+    servicio: str | None = None,
+    periodo: str | None = None,
+    orden: str | None = None,
+    fecha_emision: date | None = None,
+    tipo_factura: str = "ACICLICA",
+) -> FacturaB2B:
+    """Crea (o reutiliza) el cliente y registra una factura a partir de los
+    datos que el Agente de Facturacion extrajo de un correo pegado por el
+    analista. Reutiliza validar_factura para que quede reflejada en
+    Validaciones igual que cualquier otra factura real del ciclo."""
+    cliente = db.query(ClienteB2B).filter(ClienteB2B.numero_identificacion_fiscal == ruc).first()
+    if not cliente:
+        cliente = ClienteB2B(numero_identificacion_fiscal=ruc, razon_social=cliente_nombre, tipo_documento="RUC", activo=True)
+        db.add(cliente)
+        db.flush()
+
+    f_emision = fecha_emision or datetime.now(timezone.utc).date()
+    numero = orden or f"F-EMAIL-{int(datetime.now(timezone.utc).timestamp())}"
+
+    factura = FacturaB2B(
+        numero=numero, cliente_id=cliente.id, fuente="CORREO_CLIENTE", sistema="AGENTE_FACTURACION",
+        fecha_emision=f_emision, fecha_vencimiento=f_emision + timedelta(days=30),
+        moneda="PEN", monto_neto=monto, igv=Decimal("0"), monto=monto,
+        tipo_factura=tipo_factura, requiere_conformidad=tipo_factura == "ACICLICA",
+        estado="VALIDANDO",
+    )
+    db.add(factura)
+    db.flush()
+
+    validar_factura(db, factura, cliente)
+    if tipo_factura == "ACICLICA":
+        crear_solicitud_conformidad(db, factura)
+
+    traza = orchestrator.get_or_create_traza(db, cliente.id, factura.id)
+    audit.log(db, actor_tipo="AGENT", actor_id="FACTURACION", accion="CREAR_FACTURA_DESDE_CORREO",
+               entidad_tipo="facturas_b2b", entidad_id=factura.id,
+               after_data={"numero": numero, "monto": float(monto), "servicio": servicio, "periodo": periodo},
+               trace_id=traza.id)
+    return factura
 
 
 def detectar_servicio_no_facturado(db: Session, dias_sin_factura: int = 45) -> int:
