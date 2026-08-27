@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.core.database import get_db
 from app.core.serialization import model_to_dict, to_jsonable
@@ -17,22 +17,21 @@ def resumen(db: Session = Depends(get_db)):
 
 @router.get("/validaciones")
 def validaciones(resultado: str | None = None, limit: int = 50, offset: int = 0, db: Session = Depends(get_db)):
-    q = db.query(ValidacionFacturacion).join(ClienteB2B, ValidacionFacturacion.cliente_id == ClienteB2B.id)
+    q = db.query(ValidacionFacturacion, ClienteB2B.razon_social).join(ClienteB2B, ValidacionFacturacion.cliente_id == ClienteB2B.id)
     if resultado and resultado != "TODOS":
         q = q.filter(ValidacionFacturacion.resultado == resultado)
     rows = q.order_by(ValidacionFacturacion.created_at.desc()).offset(offset).limit(limit).all()
     out = []
-    for v in rows:
+    for v, razon_social in rows:
         d = model_to_dict(v)
-        cliente = db.query(ClienteB2B).get(v.cliente_id)
-        d["cliente_nombre"] = cliente.razon_social if cliente else None
+        d["cliente_nombre"] = razon_social
         out.append(d)
     return out
 
 
 @router.get("/casos")
 def casos(estado: str | None = None, limit: int = 50, offset: int = 0, db: Session = Depends(get_db)):
-    q = db.query(CasoFacturacion)
+    q = db.query(CasoFacturacion).options(joinedload(CasoFacturacion.cliente), joinedload(CasoFacturacion.factura))
     if estado and estado != "TODOS":
         q = q.filter(CasoFacturacion.estado == estado)
     else:
@@ -95,6 +94,9 @@ def conformidad_detalle(factura_id: str, db: Session = Depends(get_db)):
     if not conformidad:
         raise HTTPException(404, "No existe conformidad para esta factura")
     d = model_to_dict(conformidad)
+    d["factura_numero"] = conformidad.factura.numero if conformidad.factura else None
+    d["monto"] = float(conformidad.factura.monto) if conformidad.factura else None
+    d["cliente_nombre"] = conformidad.cliente.razon_social if conformidad.cliente else None
     from app.models.models import ConformidadEvento
     eventos = db.query(ConformidadEvento).filter(ConformidadEvento.conformidad_id == conformidad.id).order_by(ConformidadEvento.created_at.asc()).all()
     d["eventos"] = [model_to_dict(e) for e in eventos]
@@ -137,15 +139,19 @@ def respuesta_conformidad(conformidad_id: str, body: RespuestaConformidadBody, d
 
 @router.get("/emision")
 def emision(tipo_factura: str | None = None, db: Session = Depends(get_db)):
-    q = db.query(FacturaB2B).filter(
+    q = db.query(FacturaB2B).options(joinedload(FacturaB2B.cliente)).filter(
         FacturaB2B.estado.in_(["VALIDANDO", "APROBADO", "ESPERANDO_CONFORMIDAD", "SIN_RESPUESTA", "OBSERVADO", "GENERADO", "LISTO_EMISION"])
     )
     if tipo_factura and tipo_factura != "TODOS":
         q = q.filter(FacturaB2B.tipo_factura == tipo_factura)
     facturas = q.order_by(FacturaB2B.fecha_vencimiento.asc()).limit(100).all()
+    conformidades_por_factura = {
+        c.factura_id: c
+        for c in db.query(Conformidad).filter(Conformidad.factura_id.in_([f.id for f in facturas])).all()
+    }
     out = []
     for f in facturas:
-        conformidad = db.query(Conformidad).filter(Conformidad.factura_id == f.id).first()
+        conformidad = conformidades_por_factura.get(f.id)
         ok, motivo = facturacion.puede_emitir(f, conformidad)
         out.append({
             **model_to_dict(f),

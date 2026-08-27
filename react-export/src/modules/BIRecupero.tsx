@@ -1,7 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { motion, AnimatePresence } from 'motion/react';
 import { colors, monoFont, tabStyle, priorityStyle } from '../lib/styles';
 import { api, money } from '../lib/api';
 import FilterSelect from '../components/FilterSelect';
+import { motionTokens, prefersReducedMotion } from '../lib/motionTokens';
 
 type ResumenGeneral = {
   facturacion: { monto_facturado: number };
@@ -41,7 +44,9 @@ const AGING_LABEL: Record<string, string> = { POR_VENCER: 'Por vencer', '0_30': 
 const SUGGESTIONS = ['¿Cuáles clientes tienen mayor riesgo este mes?', '¿Cuál es la cartera vencida actual?', '¿Cuáles son las oportunidades de recuperación más grandes?'];
 
 export default function BIRecupero() {
+  const navigate = useNavigate();
   const [tab, setTab] = useState<TabId>('resumen');
+  const [estrategiaEnviada, setEstrategiaEnviada] = useState(false);
   const [resumen, setResumen] = useState<ResumenGeneral | null>(null);
   const [cartera, setCartera] = useState<CarteraRow[]>([]);
   const [riesgo, setRiesgo] = useState<{ resumen: { distribucion: Record<string, number>; total_evaluados: number; sin_historial: number }; top_clientes: RiesgoCliente[] } | null>(null);
@@ -53,16 +58,16 @@ export default function BIRecupero() {
   const [filtroPrioridad, setFiltroPrioridad] = useState('TODOS');
 
   useEffect(() => {
-    api.get<ResumenGeneral>('/api/bi/resumen').then(setResumen);
-    api.get<CarteraRow[]>('/api/cobranzas/cartera?limit=500').then(setCartera);
+    api.get<ResumenGeneral>('/api/bi/resumen').then(setResumen).catch(() => {});
+    api.get<CarteraRow[]>('/api/cobranzas/cartera?limit=500').then(setCartera).catch(() => {});
   }, []);
 
   useEffect(() => {
-    api.get(`/api/bi/riesgo?limit=20&nivel_riesgo=${filtroNivelRiesgo}`).then(setRiesgo as any);
+    api.get(`/api/bi/riesgo?limit=20&nivel_riesgo=${filtroNivelRiesgo}`).then(setRiesgo as any).catch(() => {});
   }, [filtroNivelRiesgo]);
 
   useEffect(() => {
-    api.get<Oportunidad[]>(`/api/bi/recupero?limit=30&prioridad=${filtroPrioridad}`).then(setOportunidades);
+    api.get<Oportunidad[]>(`/api/bi/recupero?limit=30&prioridad=${filtroPrioridad}`).then(setOportunidades).catch(() => {});
   }, [filtroPrioridad]);
 
   const porAging = useMemo(() => {
@@ -80,6 +85,15 @@ export default function BIRecupero() {
     }
     return Object.values(acc).sort((a, b) => b.monto - a.monto).slice(0, 8);
   }, [cartera]);
+
+  const insight = useMemo(() => {
+    const vencida = cartera.filter((c) => c.dias_vencidos > 0);
+    const clientesVencidos = new Set(vencida.map((c) => c.cliente_id));
+    const montoVencido = vencida.reduce((s, c) => s + Number(c.saldo_pendiente), 0);
+    const criticos = (riesgo?.top_clientes || []).filter((r) => r.nivel_riesgo === 'ALTO' && r.probabilidad_pago < 0.3);
+    const montoPriorizable = criticos.reduce((s, r) => s + Number(r.saldo_pendiente), 0);
+    return { clientesVencidos: clientesVencidos.size, montoVencido, criticos: criticos.length, montoPriorizable };
+  }, [cartera, riesgo]);
 
   const send = async (q?: string) => {
     const pregunta = (q ?? chatInput).trim();
@@ -108,6 +122,56 @@ export default function BIRecupero() {
 
       {tab === 'resumen' && resumen && (
         <div>
+          <div style={{ fontSize: 11.5, fontWeight: 700, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 10 }}>Inteligencia detectada por TRAZA</div>
+
+          {insight.clientesVencidos > 0 && (
+            <div style={{ background: '#fff', border: `1px solid ${colors.border}`, borderRadius: 10, padding: 20, marginBottom: 18 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: colors.blueDark, marginBottom: 6 }}>Patrón detectado</div>
+              <div style={{ fontSize: 14, color: colors.textStrong, lineHeight: 1.6 }}>
+                <b>{insight.clientesVencidos} {insight.clientesVencidos === 1 ? 'cliente concentra' : 'clientes concentran'}</b> <b>{money(insight.montoVencido)}</b> de cartera vencida.
+                {insight.criticos > 0 && <> De los evaluados, <b>{insight.criticos}</b> presentan riesgo alto con probabilidad de pago menor a 30%.</>}
+              </div>
+
+              {insight.criticos > 0 && (
+                <>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: colors.greenDark, marginTop: 16, marginBottom: 6 }}>Oportunidad</div>
+                  <div style={{ fontSize: 14, color: colors.text, lineHeight: 1.6 }}>
+                    Priorizar el contacto con estos clientes podría anticipar la gestión de <b>{money(insight.montoPriorizable)}</b> de cartera en riesgo.
+                  </div>
+                </>
+              )}
+
+              <div style={{ display: 'flex', gap: 10, marginTop: 16 }}>
+                <button onClick={() => setTab('riesgo')} style={btnGhost}>Analizar</button>
+                {insight.criticos > 0 && (
+                  <button
+                    onClick={() => { setEstrategiaEnviada(true); setTimeout(() => setEstrategiaEnviada(false), prefersReducedMotion() ? 2200 : 3600); }}
+                    style={{ height: 30, padding: '0 12px', borderRadius: 6, border: 'none', background: colors.navy, color: '#fff', fontSize: 12.5, fontWeight: 600, cursor: 'pointer' }}
+                  >
+                    Convertir en estrategia
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+
+          <AnimatePresence>
+            {estrategiaEnviada && (
+              <motion.div
+                initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} transition={motionTokens.default}
+                style={{ background: colors.blueBg, border: '1px solid #D6E6FB', borderRadius: 10, padding: '14px 18px', marginBottom: 18, display: 'flex', alignItems: 'center', gap: 16 }}
+              >
+                <div style={{ fontSize: 13, color: colors.text }}>Estrategia enviada a Cobranzas: adelantar contacto en cuentas de alto riesgo.</div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5, color: colors.textMuted, marginLeft: 'auto' }}>
+                  <span style={{ fontWeight: 700, color: colors.textStrong }}>BI</span>
+                  <motion.span initial={{ x: -8, opacity: 0 }} animate={{ x: 0, opacity: 1 }} transition={{ delay: 0.15, ...motionTokens.default }}>──▶</motion.span>
+                  <span style={{ fontWeight: 700, color: colors.textStrong }}>Cobranzas</span>
+                  <button onClick={() => navigate('/cobranzas')} style={{ ...btnGhost, marginLeft: 10 }}>Ver en Cobranzas</button>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 16, marginBottom: 18 }}>
             <Kpi label="Monto facturado" value={money(resumen.facturacion.monto_facturado)} />
             <Kpi label="Cartera pendiente" value={money(resumen.cobranzas.cartera_pendiente)} />

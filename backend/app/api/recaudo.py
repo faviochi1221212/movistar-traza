@@ -4,7 +4,7 @@ import io
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.core.database import get_db
 from app.core.serialization import model_to_dict
@@ -30,10 +30,23 @@ def movimientos(estado: str | None = None, limit: int = 100, db: Session = Depen
     if estado and estado != "TODOS":
         q = q.filter(MovimientoBancarioDemo.estado == estado)
     rows = q.order_by(MovimientoBancarioDemo.fecha_movimiento.desc()).limit(limit).all()
+
+    matches_por_movimiento: dict = {}
+    if rows:
+        todos_matches = (
+            db.query(MatchBancario)
+            .options(joinedload(MatchBancario.cliente), joinedload(MatchBancario.factura))
+            .filter(MatchBancario.movimiento_id.in_([m.id for m in rows]))
+            .order_by(MatchBancario.created_at.desc())
+            .all()
+        )
+        for mb in todos_matches:
+            matches_por_movimiento.setdefault(mb.movimiento_id, mb)
+
     out = []
     for m in rows:
         d = model_to_dict(m)
-        match = db.query(MatchBancario).filter(MatchBancario.movimiento_id == m.id).order_by(MatchBancario.created_at.desc()).first()
+        match = matches_por_movimiento.get(m.id)
         if match:
             d["match"] = model_to_dict(match)
             d["cliente_sugerido"] = match.cliente.razon_social if match.cliente else None

@@ -65,10 +65,12 @@ def main():
 
     # ---- 1. Clientes ----
     cliente_map: dict[int, uuid.UUID] = {}
+    cliente_razon_map: dict[int, str] = {}
     clientes_rows = []
     for _, r in clientes_df.iterrows():
         cid = to_uuid()
         cliente_map[int(r["cliente_id"])] = cid
+        cliente_razon_map[int(r["cliente_id"])] = r["nombre_cliente"]
         clientes_rows.append({
             "id": cid,
             "segmento_pais": r.get("segmento"),
@@ -126,6 +128,7 @@ def main():
 
     factura_map: dict[int, uuid.UUID] = {}
     factura_meta: dict[int, dict] = {}
+    factura_numero_map: dict[int, str] = {}
     facturas_rows = []
     en_pipeline_ids: list[int] = []
 
@@ -147,6 +150,7 @@ def main():
 
         factura_map[int(r["factura_id"])] = f_id
         factura_meta[int(r["factura_id"])] = {"cliente_id": cliente_id, "en_pipeline": en_pipeline, "tipo_factura": tipo_factura}
+        factura_numero_map[int(r["factura_id"])] = r["numero_factura"]
         if en_pipeline:
             en_pipeline_ids.append(int(r["factura_id"]))
 
@@ -215,11 +219,29 @@ def main():
         else:
             # Pago aun no identificado con certeza: se representa como movimiento
             # bancario demo pendiente, para ejercer el flujo real de conciliacion.
+            #
+            # La descripcion bancaria debe parecerse a una transferencia real:
+            # una transferencia corporativa suele traer alguna referencia (numero
+            # de factura y/o razon social) en el campo libre del banco, aunque no
+            # siempre — por eso variamos el detalle en vez de dejar el mismo texto
+            # generico fijo en el 100% de los movimientos, lo que hacia imposible
+            # que el motor de matching (conciliacion.calcular_score) encontrara una
+            # coincidencia en ningun caso, sin importar que tan bien calzaran monto
+            # y fecha (ver seccion "referencia_factura"/"cliente_compatible").
             banco = BANCOS[hash((int(r["pago_id"]))) % len(BANCOS)]
+            numero_factura = factura_numero_map.get(factura_csv_id) if factura_csv_id else None
+            razon_social = cliente_razon_map.get(int(r["cliente_id"]))
+            variante = random.random()
+            if numero_factura and variante < 0.55:
+                descripcion = f"TRANSF PAGO FACT {numero_factura}"
+            elif razon_social and variante < 0.80:
+                descripcion = f"TRANSF {razon_social}"
+            else:
+                descripcion = "TRANSF VARIOS"
             movimientos_rows.append({
                 "id": to_uuid(), "fecha_movimiento": datetime.combine(fecha_pago, datetime.min.time(), tzinfo=timezone.utc),
                 "banco": banco, "nro_operacion": f"OP-{800000 + int(r['pago_id'])}",
-                "descripcion": "TRANSF VARIOS", "monto": monto, "tipo_movimiento": "ABONO",
+                "descripcion": descripcion, "monto": monto, "tipo_movimiento": "ABONO",
                 "estado": "PENDIENTE", "fuente": "DEMO",
             })
 

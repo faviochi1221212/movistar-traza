@@ -1,8 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { motion, AnimatePresence } from 'motion/react';
 import { colors, monoFont, priorityStyle, tabStyle } from '../lib/styles';
 import { api, fecha, fechaHora, money } from '../lib/api';
 import Drawer from '../components/Drawer';
 import FilterSelect from '../components/FilterSelect';
+import { motionTokens, prefersReducedMotion } from '../lib/motionTokens';
 
 type Resumen = {
   validacion: { correctas: number; en_revision: number; total: number };
@@ -60,6 +62,16 @@ export default function Facturacion() {
   const [filtroEstadoCaso, setFiltroEstadoCaso] = useState('TODOS');
   const [filtroTipoFactura, setFiltroTipoFactura] = useState('TODOS');
 
+  const [consolidando, setConsolidando] = useState(false);
+  const [handoff, setHandoff] = useState<{ numero: string; monto: number } | null>(null);
+  const esPrimeraCarga = useRef(true);
+
+  const mostrarConsolidacion = () => {
+    if (prefersReducedMotion()) return;
+    setConsolidando(true);
+    setTimeout(() => setConsolidando(false), 1500);
+  };
+
   const cargar = () => {
     setLoading(true);
     setError(null);
@@ -74,7 +86,15 @@ export default function Facturacion() {
       .finally(() => setLoading(false));
   };
 
-  useEffect(cargar, [filtroResultado, filtroEstadoCaso, filtroTipoFactura]);
+  useEffect(() => {
+    cargar();
+    if (esPrimeraCarga.current) { esPrimeraCarga.current = false; mostrarConsolidacion(); }
+  }, [filtroResultado, filtroEstadoCaso, filtroTipoFactura]);
+
+  const ejecutarValidaciones = () => {
+    mostrarConsolidacion();
+    api.post('/api/facturacion/procesar-lote').then(cargar);
+  };
 
   const onReview = (c: Caso) => {
     if (c.factura_id) { setConformidadFacturaId(c.factura_id); setTab('conformidad'); }
@@ -82,7 +102,17 @@ export default function Facturacion() {
   };
 
   const emitir = async (id: string) => {
-    await api.post(`/api/facturacion/facturas/${id}/emitir`);
+    const f = emision.find((e) => e.id === id);
+    try {
+      await api.post(`/api/facturacion/facturas/${id}/emitir`);
+    } catch (err) {
+      setError(String(err));
+      return;
+    }
+    if (f) {
+      setHandoff({ numero: f.numero, monto: f.monto });
+      setTimeout(() => setHandoff(null), prefersReducedMotion() ? 2200 : 3600);
+    }
     cargar();
   };
 
@@ -93,10 +123,19 @@ export default function Facturacion() {
           <div style={{ fontSize: 22, fontWeight: 700, color: colors.textStrong }}>Facturación</div>
           <div style={{ fontSize: 13.5, color: colors.textMuted, marginTop: 4 }}>Detecta inconsistencias, anomalías y posibles omisiones en el ciclo de facturación.</div>
         </div>
-        <button onClick={() => api.post('/api/facturacion/procesar-lote').then(cargar)} style={btnLight}>Ejecutar validaciones</button>
+        <button onClick={ejecutarValidaciones} style={btnLight}>Ejecutar validaciones</button>
       </div>
 
-      {error && <div style={{ ...tagBox({ color: colors.redDark, bg: colors.redBg }), marginBottom: 16 }}>Error cargando datos: {error}</div>}
+      {error && (
+        <div style={{ background: colors.redBg, border: '1px solid #F8C9C9', borderRadius: 8, padding: '14px 16px', marginBottom: 16 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: colors.redDark }}>No pudimos completar la operación</div>
+          <div style={{ fontSize: 12.5, color: colors.text, marginTop: 3 }}>El backend no respondió a tiempo o la base de datos no está disponible. Intenta de nuevo en unos segundos.</div>
+          <div style={{ ...monoFont, fontSize: 11, color: colors.textFaint, marginTop: 6 }}>{error}</div>
+        </div>
+      )}
+
+      {consolidando && <ConsolidationIntro total={resumen?.validacion.total} />}
+      <AnimatePresence>{handoff && <EmisionHandoff numero={handoff.numero} monto={handoff.monto} />}</AnimatePresence>
 
       <div style={{ display: 'flex', gap: 26, borderBottom: `1px solid ${colors.border}`, marginBottom: 24 }}>
         {TABS.map((t) => (
@@ -108,6 +147,8 @@ export default function Facturacion() {
 
       {tab === 'resumen' && resumen && (
         <div>
+          <FlowRibbon resumen={resumen} emision={emision} onJump={setTab} />
+
           <div style={{ background: '#fff', border: `1px solid ${colors.border}`, borderRadius: 10, padding: 20, marginBottom: 20 }}>
             <div style={{ fontSize: 14.5, fontWeight: 700, color: colors.textStrong, marginBottom: 16 }}>Estado del ciclo</div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)' }}>
@@ -360,12 +401,22 @@ function ConformidadScreen({ facturaId, onVolver, onCambio }: { facturaId: strin
   return (
     <div>
       <div onClick={onVolver} style={{ fontSize: 12.5, color: colors.blueDark, cursor: 'pointer', marginBottom: 16 }}>← Volver a casos</div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 20 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 16 }}>
         <div>
           <div style={{ fontSize: 19, fontWeight: 700, color: colors.textStrong }}>Conformidad del cliente</div>
-          <div style={{ ...monoFont, fontSize: 13, color: colors.textMuted, marginTop: 4 }}>{data.factura_numero} · {data.cliente_nombre}</div>
+          <div style={{ ...monoFont, fontSize: 13, color: colors.textMuted, marginTop: 4 }}>
+            {data.cliente_nombre} · {data.factura_numero}{data.monto != null ? ` · ${money(data.monto)}` : ''}
+          </div>
         </div>
         <span style={tagBox(estadoTag[data.estado] || estadoTag.PENDIENTE)}>{data.estado}</span>
+      </div>
+
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 20, fontSize: 12.5, color: colors.textMuted }}>
+        <span style={{ fontWeight: 700, color: colors.textStrong }}>Facturación</span>
+        <span>─── ✉ Cliente ───</span>
+        <span style={{ fontWeight: 700, color: data.estado === 'APROBADO' ? colors.greenDark : colors.textMuted }}>
+          {data.estado === 'APROBADO' ? 'Aprobada ✓' : data.estado === 'OBSERVADO' ? 'Observada' : 'Esperando respuesta'}
+        </span>
       </div>
 
       <div style={{ background: '#fff', border: `1px solid ${colors.border}`, borderRadius: 10, padding: 20, marginBottom: 16 }}>
@@ -396,6 +447,113 @@ function ConformidadScreen({ facturaId, onVolver, onCambio }: { facturaId: strin
           {data.respuesta_cliente || 'Respuesta registrada.'}
         </div>
       )}
+    </div>
+  );
+}
+
+const FUENTES = ['Clientes', 'Servicios', 'Tarifas', 'Periodos', 'Contratos'];
+
+/** Reemplaza el spinner por una vista corta de qué fuentes consolidó el agente
+ * (sección 20 del prompt de rediseño) — solo en primera carga o al reprocesar. */
+function ConsolidationIntro({ total }: { total?: number }) {
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: -6 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0 }}
+      transition={motionTokens.default}
+      style={{ background: '#fff', border: `1px solid ${colors.border}`, borderRadius: 10, padding: '18px 20px', marginBottom: 20 }}
+    >
+      <div style={{ display: 'flex', gap: 22, flexWrap: 'wrap' }}>
+        {FUENTES.map((f, i) => (
+          <motion.div
+            key={f}
+            initial={{ opacity: 0, x: -6 }}
+            animate={{ opacity: 1, x: 0 }}
+            transition={{ ...motionTokens.fast, delay: i * 0.16 }}
+            style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 13, color: colors.text }}
+          >
+            {f}
+            <span style={{ color: colors.greenDark, fontWeight: 700 }}>✓</span>
+          </motion.div>
+        ))}
+        {total != null && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ ...motionTokens.fast, delay: FUENTES.length * 0.16 }}
+            style={{ marginLeft: 'auto', fontSize: 13, fontWeight: 700, color: colors.textStrong }}
+          >
+            {total} documentos consolidados
+          </motion.div>
+        )}
+      </div>
+    </motion.div>
+  );
+}
+
+/** Momento de handoff Facturación → Cobranzas al emitir (sección 24): breve,
+ * discreto, sin celebración — solo confirma que el trabajo pasó de agente. */
+function EmisionHandoff({ numero, monto }: { numero: string; monto: number }) {
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: -8 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: -8 }}
+      transition={motionTokens.default}
+      style={{ background: colors.greenBg, border: '1px solid #BFE8CE', borderRadius: 10, padding: '14px 18px', marginBottom: 20, display: 'flex', alignItems: 'center', gap: 16 }}
+    >
+      <div>
+        <div style={{ fontSize: 13, fontWeight: 700, color: colors.greenDark }}>Factura emitida — {numero}</div>
+        <div style={{ fontSize: 12.5, color: colors.text, marginTop: 2 }}>{money(monto)}</div>
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5, color: colors.textMuted, marginLeft: 'auto' }}>
+        <span style={{ fontWeight: 600, color: colors.textStrong }}>Facturación</span>
+        <motion.span
+          initial={{ x: -8, opacity: 0 }}
+          animate={{ x: 0, opacity: 1 }}
+          transition={{ delay: 0.2, ...motionTokens.default }}
+        >
+          ──▶
+        </motion.span>
+        <span style={{ fontWeight: 600, color: colors.textStrong }}>Cobranzas</span>
+      </div>
+    </motion.div>
+  );
+}
+
+/** Ribbon del pipeline conceptual completo (secciones 18/21/22): fuentes reales
+ * consolidadas → validación → lo que está en proceso ahora mismo (cíclica/acíclica)
+ * → conformidad → emisión. Todos los números vienen de /resumen y /emision reales. */
+function FlowRibbon({ resumen, emision, onJump }: { resumen: Resumen; emision: Emision[]; onJump: (t: TabId) => void }) {
+  const ciclicas = emision.filter((e) => e.tipo_factura === 'CICLICA').length;
+  const aciclicas = emision.filter((e) => e.tipo_factura === 'ACICLICA').length;
+
+  const stages: { label: string; lines: string[]; onClick?: () => void }[] = [
+    { label: 'Fuentes', lines: [`${resumen.validacion.total} documentos`] },
+    { label: 'Validación', lines: [`${resumen.validacion.correctas} correctos`, `${resumen.validacion.en_revision} excepciones`], onClick: () => onJump('validaciones') },
+    { label: 'En proceso ahora', lines: [`${ciclicas} cíclicas`, `${aciclicas} acíclicas`], onClick: () => onJump('emision') },
+    { label: 'Conformidad', lines: [`${resumen.conformidad.pendientes} pendientes`], onClick: () => onJump('casos') },
+    { label: 'Emisión', lines: [`${resumen.emision.emitidas} emitidas`, money(resumen.emision.monto_emitido)], onClick: () => onJump('emision') },
+  ];
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'stretch', gap: 0, marginBottom: 18, overflowX: 'auto' }}>
+      {stages.map((s, i) => (
+        <div key={s.label} style={{ display: 'flex', alignItems: 'center', flex: 1, minWidth: 140 }}>
+          <div
+            onClick={s.onClick}
+            style={{
+              flex: 1, background: '#fff', border: `1px solid ${colors.border}`, borderRadius: 8, padding: '12px 14px',
+              cursor: s.onClick ? 'pointer' : 'default',
+            }}
+          >
+            <div style={{ fontSize: 10.5, fontWeight: 700, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 6 }}>{s.label}</div>
+            {s.lines.map((l) => <div key={l} style={{ fontSize: 12.5, color: colors.textStrong, fontWeight: 600 }}>{l}</div>)}
+          </div>
+          {i < stages.length - 1 && <div style={{ width: 18, textAlign: 'center', color: colors.textFaint, fontSize: 13, flexShrink: 0 }}>→</div>}
+        </div>
+      ))}
     </div>
   );
 }

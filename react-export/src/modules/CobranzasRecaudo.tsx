@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react';
+import { motion, AnimatePresence } from 'motion/react';
 import { colors, monoFont, pagoProbStyle, tabStyle } from '../lib/styles';
 import { api, fecha, fechaHora, money } from '../lib/api';
 import Drawer from '../components/Drawer';
 import FilterSelect from '../components/FilterSelect';
+import { motionTokens, prefersReducedMotion } from '../lib/motionTokens';
 
 type Resumen = { cartera_pendiente: number; cartera_vencida: number; ratio_cobrado_facturado: number; clientes_riesgo_alto: number; facturas_en_cartera: number };
 type CarteraRow = { factura_id: string; numero: string; cliente_id: string; razon_social: string; saldo_pendiente: number; fecha_vencimiento: string; dias_vencidos: number; aging: string; estado_pago: string };
@@ -13,7 +15,7 @@ type Movimiento = { id: string; fecha_movimiento: string; banco: string; nro_ope
 const TABS = [
   { id: 'resumen', label: 'Resumen de cartera' },
   { id: 'gestion', label: 'Gestión de cobranza' },
-  { id: 'bandeja', label: 'Bandeja IA' },
+  { id: 'bandeja', label: 'Comunicaciones' },
   { id: 'conciliacion', label: 'Conciliación y recaudo' },
 ] as const;
 type TabId = typeof TABS[number]['id'];
@@ -50,17 +52,18 @@ export default function CobranzasRecaudo() {
   const [gestionFacturaId, setGestionFacturaId] = useState<string | null>(null);
   const [emailSeleccionado, setEmailSeleccionado] = useState<Email | null>(null);
   const [movSeleccionado, setMovSeleccionado] = useState<string | null>(null);
+  const [pagoAplicado, setPagoAplicado] = useState<{ factura_numero: string; saldo_anterior: number; monto: number } | null>(null);
 
   const [filtroAging, setFiltroAging] = useState('TODOS');
   const [filtroClasificacion, setFiltroClasificacion] = useState('TODOS');
   const [filtroEstadoMov, setFiltroEstadoMov] = useState('TODOS');
 
   const cargar = () => {
-    api.get<Resumen>('/api/cobranzas/resumen').then(setResumen);
-    api.get<CarteraRow[]>(`/api/cobranzas/cartera?limit=100&aging=${filtroAging}`).then(setCartera);
-    api.get<Email[]>(`/api/cobranzas/emails?limit=50&clasificacion=${filtroClasificacion}`).then(setEmails);
-    api.get<Caso[]>('/api/cobranzas/casos').then(setCasos);
-    api.get<Movimiento[]>(`/api/recaudo/movimientos?limit=100&estado=${filtroEstadoMov}`).then(setMovimientos);
+    api.get<Resumen>('/api/cobranzas/resumen').then(setResumen).catch(() => {});
+    api.get<CarteraRow[]>(`/api/cobranzas/cartera?limit=100&aging=${filtroAging}`).then(setCartera).catch(() => {});
+    api.get<Email[]>(`/api/cobranzas/emails?limit=50&clasificacion=${filtroClasificacion}`).then(setEmails).catch(() => {});
+    api.get<Caso[]>('/api/cobranzas/casos').then(setCasos).catch(() => {});
+    api.get<Movimiento[]>(`/api/recaudo/movimientos?limit=100&estado=${filtroEstadoMov}`).then(setMovimientos).catch(() => {});
   };
   useEffect(() => { cargar(); }, [filtroAging, filtroClasificacion, filtroEstadoMov]);
 
@@ -74,6 +77,8 @@ export default function CobranzasRecaudo() {
       <div style={{ display: 'flex', gap: 26, borderBottom: `1px solid ${colors.border}`, marginBottom: 24 }}>
         {TABS.map((t) => <div key={t.id} style={tabStyle(tab === t.id)} onClick={() => setTab(t.id)}>{t.label}</div>)}
       </div>
+
+      <AnimatePresence>{pagoAplicado && <PagoAplicadoToast {...pagoAplicado} />}</AnimatePresence>
 
       {tab === 'resumen' && resumen && (
         <div>
@@ -154,6 +159,7 @@ export default function CobranzasRecaudo() {
             ]} />
             <button onClick={() => api.post('/api/cobranzas/procesar-lote').then(cargar)} style={btnLight}>Clasificar pendientes</button>
           </div>
+          <div style={{ fontSize: 11.5, fontWeight: 700, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 10 }}>Clasificadas por TRAZA</div>
           <div style={{ background: '#fff', border: `1px solid ${colors.border}`, borderRadius: 10, overflow: 'hidden' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
               <thead><tr style={{ background: '#F8FAFC' }}>
@@ -174,7 +180,7 @@ export default function CobranzasRecaudo() {
               </tbody>
             </table>
           </div>
-          <EmailDrawer email={emailSeleccionado} onClose={() => setEmailSeleccionado(null)} onCambio={() => { cargar(); }} />
+          <EmailDrawer email={emailSeleccionado} cartera={cartera} onClose={() => setEmailSeleccionado(null)} onCambio={() => { cargar(); }} />
         </div>
       )}
 
@@ -217,7 +223,13 @@ export default function CobranzasRecaudo() {
               </tbody>
             </table>
           </div>
-          <MovimientoDrawer movId={movSeleccionado} onClose={() => setMovSeleccionado(null)} onCambio={cargar} />
+          <MovimientoDrawer
+            movId={movSeleccionado}
+            cartera={cartera}
+            onClose={() => setMovSeleccionado(null)}
+            onCambio={cargar}
+            onConfirmado={(t) => { setPagoAplicado(t); setTimeout(() => setPagoAplicado(null), prefersReducedMotion() ? 2200 : 3600); }}
+          />
         </div>
       )}
     </div>
@@ -231,7 +243,7 @@ function GestionDrawer({ facturaId, onClose, onCambio, irAConciliacion }: { fact
   const [fechaPromesa, setFechaPromesa] = useState('');
 
   useEffect(() => {
-    if (facturaId) api.get(`/api/cobranzas/gestion/${facturaId}`).then(setData);
+    if (facturaId) api.get(`/api/cobranzas/gestion/${facturaId}`).then(setData).catch(() => setData(null));
     else setData(null);
   }, [facturaId]);
 
@@ -255,16 +267,19 @@ function GestionDrawer({ facturaId, onClose, onCambio, irAConciliacion }: { fact
               ['Estado gestión', data.gestion?.estado || 'PENDIENTE', false],
             ]} />
           </Section>
-          <Section title="ÚLTIMA COMUNICACIÓN">
-            {data.ultimo_email ? (
+          <Section title="LÍNEA DE TIEMPO">
+            <CuentaTimeline data={data} />
+          </Section>
+          {data.ultimo_email && (
+            <Section title="ÚLTIMO CORREO">
               <div style={{ border: `1px solid ${colors.border}`, borderRadius: 8, padding: '14px 16px' }}>
                 <div style={{ fontSize: 11.5, color: colors.textFaint, marginBottom: 6 }}>{fechaHora(data.ultimo_email.recibido_at)}</div>
                 <div style={{ fontSize: 13.5, fontWeight: 700, color: colors.textStrong, marginBottom: 6 }}>{data.ultimo_email.asunto}</div>
                 <div style={{ fontSize: 13, color: colors.text, lineHeight: 1.5 }}>{data.ultimo_email.cuerpo}</div>
                 {data.ultimo_email.clasificacion && <span style={{ ...clasifBox(data.ultimo_email.clasificacion), marginTop: 10, display: 'inline-block' }}>{data.ultimo_email.clasificacion}</span>}
               </div>
-            ) : <div style={{ border: `1px dashed ${colors.border}`, borderRadius: 8, padding: '14px 16px', fontSize: 13, color: colors.textFaint }}>Sin comunicación reciente de este cliente.</div>}
-          </Section>
+            </Section>
+          )}
           <Section title="REGISTRAR PROMESA DE PAGO">
             <div style={{ display: 'flex', gap: 8 }}>
               <input value={montoPromesa} onChange={(e) => setMontoPromesa(e.target.value)} placeholder="Monto" style={inputStyle} />
@@ -286,13 +301,24 @@ function GestionDrawer({ facturaId, onClose, onCambio, irAConciliacion }: { fact
   );
 }
 
-function EmailDrawer({ email, onClose, onCambio }: { email: Email | null; onClose: () => void; onCambio: () => void }) {
+const ACCION_SUGERIDA: Record<string, string> = {
+  CONFIRMACION_PAGO: 'Verificar movimiento bancario',
+  PROMESA_PAGO: 'Registrar promesa de pago y hacer seguimiento en la fecha comprometida',
+  CONSULTA: 'Responder la consulta del cliente',
+  RECLAMO: 'Revisar el caso y coordinar con el analista responsable',
+  NOTA_CREDITO: 'Evaluar la nota de crédito solicitada',
+  OTRO: 'Revisar manualmente',
+};
+
+function EmailDrawer({ email, cartera, onClose, onCambio }: { email: Email | null; cartera: CarteraRow[]; onClose: () => void; onCambio: () => void }) {
   const [clasificando, setClasificando] = useState(false);
   if (!email) return null;
   const clasificar = async () => {
     setClasificando(true);
     try { await api.post(`/api/cobranzas/emails/${email.id}/clasificar`); onCambio(); onClose(); } finally { setClasificando(false); }
   };
+  const facturaRelacionada = email.factura_id ? cartera.find((c) => c.factura_id === email.factura_id) : undefined;
+
   return (
     <Drawer open={!!email} onClose={onClose} width={440} title={email.asunto} subtitle={<span style={{ ...monoFont, fontSize: 12.5, color: colors.textMuted }}>{email.cliente_nombre}</span>}
       footer={(
@@ -301,32 +327,39 @@ function EmailDrawer({ email, onClose, onCambio }: { email: Email | null; onClos
           <button onClick={onClose} style={btnLight}>Cerrar</button>
         </>
       )}>
-      <div style={{ fontSize: 11.5, color: colors.textFaint, marginBottom: 10 }}>{fechaHora(email.recibido_at)}</div>
-      <div style={{ fontSize: 13.5, color: colors.text, lineHeight: 1.6, marginBottom: 16 }}>{email.cuerpo}</div>
-      {email.adjuntos.length > 0 && (
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16 }}>
-          {email.adjuntos.map((a, i) => <span key={i} style={{ ...monoFont, fontSize: 12, border: `1px solid ${colors.border}`, borderRadius: 6, padding: '6px 10px' }}>{a.nombre}</span>)}
-        </div>
-      )}
-      {email.clasificacion ? (
-        <div style={{ background: colors.blueBg, borderRadius: 8, padding: '14px 16px' }}>
-          <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: 0.4, color: colors.blueDark, marginBottom: 6 }}>CLASIFICACIÓN TRAZA</div>
-          <span style={clasifBox(email.clasificacion)}>{email.clasificacion}</span>
-          {email.confianza != null && <div style={{ fontSize: 12.5, color: colors.text, marginTop: 8 }}>Confianza: {(email.confianza * 100).toFixed(0)}%</div>}
-        </div>
-      ) : (
-        <div style={{ background: colors.amberBg, borderRadius: 8, padding: '14px 16px', fontSize: 13, color: colors.amberDark, fontWeight: 600 }}>Pendiente de clasificación.</div>
-      )}
+      <Section title="CORREO ORIGINAL">
+        <div style={{ fontSize: 11.5, color: colors.textFaint, marginBottom: 10 }}>{fechaHora(email.recibido_at)}</div>
+        <div style={{ fontSize: 13.5, color: colors.text, lineHeight: 1.6 }}>{email.cuerpo}</div>
+        {email.adjuntos.length > 0 && (
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 12 }}>
+            {email.adjuntos.map((a, i) => <span key={i} style={{ ...monoFont, fontSize: 12, border: `1px solid ${colors.border}`, borderRadius: 6, padding: '6px 10px' }}>{a.nombre}</span>)}
+          </div>
+        )}
+      </Section>
+
+      <Section title="INTERPRETACIÓN DE TRAZA">
+        {email.clasificacion ? (
+          <InfoBox rows={[
+            ['Tipo', email.clasificacion, false],
+            ...(email.confianza != null ? [['Confianza', `${(email.confianza * 100).toFixed(0)}%`, false] as [string, any, boolean]] : []),
+            ['Fecha', fecha(email.recibido_at), false],
+            ['Factura relacionada', facturaRelacionada?.numero || (email.factura_id ? 'Detectada' : 'No detectada'), true],
+            ['Acción sugerida', ACCION_SUGERIDA[email.clasificacion] || 'Revisar manualmente', false],
+          ]} />
+        ) : (
+          <div style={{ background: colors.amberBg, borderRadius: 8, padding: '14px 16px', fontSize: 13, color: colors.amberDark, fontWeight: 600 }}>Pendiente de clasificación.</div>
+        )}
+      </Section>
     </Drawer>
   );
 }
 
-function MovimientoDrawer({ movId, onClose, onCambio }: { movId: string | null; onClose: () => void; onCambio: () => void }) {
+function MovimientoDrawer({ movId, cartera, onClose, onCambio, onConfirmado }: { movId: string | null; cartera: CarteraRow[]; onClose: () => void; onCambio: () => void; onConfirmado: (t: { factura_numero: string; saldo_anterior: number; monto: number }) => void }) {
   const [data, setData] = useState<any>(null);
   const [motivo, setMotivo] = useState('');
 
   useEffect(() => {
-    if (movId) api.get(`/api/recaudo/movimientos/${movId}`).then(setData);
+    if (movId) api.get(`/api/recaudo/movimientos/${movId}`).then(setData).catch(() => setData(null));
     else setData(null);
   }, [movId]);
 
@@ -335,13 +368,27 @@ function MovimientoDrawer({ movId, onClose, onCambio }: { movId: string | null; 
   const mov = data.movimiento;
   const match = data.match;
   const puedeConfirmar = match && match.factura_id && match.estado === 'SUGERIDO';
+  const sinCoincidencia = match && (match.tipo_match === 'SIN_MATCH' || !match.factura_id);
+  const requiereRevision = match && !sinCoincidencia && match.requiere_revision_manual;
+
+  const confirmar = async () => {
+    const c = cartera.find((row) => row.factura_id === match.factura_id);
+    try {
+      await api.post(`/api/recaudo/matches/${match.id}/confirmar`, {});
+    } catch {
+      return;
+    }
+    if (c) onConfirmado({ factura_numero: c.numero, saldo_anterior: c.saldo_pendiente, monto: mov.monto });
+    onCambio();
+    onClose();
+  };
 
   return (
     <Drawer open={!!movId} onClose={onClose} width={480} title="Detalle del movimiento" subtitle={<span style={conciliacionEstadoStyle(mov.estado)}>{mov.estado}</span>}
       footer={(
         <>
           {!match && <button onClick={async () => { await api.post(`/api/recaudo/movimientos/${movId}/evaluar`); const d: any = await api.get(`/api/recaudo/movimientos/${movId}`); setData(d); onCambio(); }} style={{ height: 38, borderRadius: 7, border: 'none', background: colors.blue, color: '#fff', fontSize: 13.5, fontWeight: 600, cursor: 'pointer' }}>Evaluar match</button>}
-          {puedeConfirmar && <button onClick={async () => { await api.post(`/api/recaudo/matches/${match.id}/confirmar`, {}); onCambio(); onClose(); }} style={{ height: 38, borderRadius: 7, border: 'none', background: colors.blue, color: '#fff', fontSize: 13.5, fontWeight: 600, cursor: 'pointer' }}>Confirmar coincidencia</button>}
+          {puedeConfirmar && <button onClick={confirmar} style={{ height: 38, borderRadius: 7, border: 'none', background: colors.blue, color: '#fff', fontSize: 13.5, fontWeight: 600, cursor: 'pointer' }}>Confirmar coincidencia</button>}
           {puedeConfirmar && <button onClick={async () => { await api.post(`/api/recaudo/matches/${match.id}/rechazar`, { motivo: motivo || 'Rechazado por el analista' }); onCambio(); onClose(); }} style={btnLight}>Rechazar sugerencia</button>}
           <button onClick={onClose} style={btnLight}>Cerrar</button>
         </>
@@ -351,6 +398,15 @@ function MovimientoDrawer({ movId, onClose, onCambio }: { movId: string | null; 
       </Section>
       {match ? (
         <>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14, fontSize: 13, fontWeight: 700 }}>
+            {sinCoincidencia ? (
+              <span style={{ color: colors.redDark }}>✗ Sin coincidencia — no encontramos ninguna factura compatible</span>
+            ) : requiereRevision ? (
+              <span style={{ color: colors.amberDark }}>⚠ Revisión manual — la coincidencia no es lo bastante certera para aplicarse sola</span>
+            ) : (
+              <span style={{ color: colors.greenDark }}>✓ Match encontrado</span>
+            )}
+          </div>
           <Section title={`COINCIDENCIA (${match.tipo_match}, score ${(match.score * 100).toFixed(0)}%)`}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
               {Object.entries(match.criterios || {}).filter(([k]) => k !== 'candidatos_alternativos').map(([k, v]: any) => (
@@ -380,6 +436,74 @@ function MovimientoDrawer({ movId, onClose, onCambio }: { movId: string | null; 
         <div style={{ background: colors.amberBg, border: '1px solid #FDE8B8', borderRadius: 8, padding: '14px 16px', fontSize: 13, color: colors.amberDark, fontWeight: 600 }}>Aún no se evaluó este movimiento contra la cartera pendiente.</div>
       )}
     </Drawer>
+  );
+}
+
+/** Confirmación discreta de pago aplicado (sección 29): sin confetti, solo el
+ * cambio de saldo real y el traspaso Cobranzas → Recaudo. */
+function PagoAplicadoToast({ factura_numero, saldo_anterior, monto }: { factura_numero: string; saldo_anterior: number; monto: number }) {
+  const saldoActual = Math.max(0, saldo_anterior - monto);
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: -8 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: -8 }}
+      transition={motionTokens.default}
+      style={{ background: colors.greenBg, border: '1px solid #BFE8CE', borderRadius: 10, padding: '14px 18px', marginBottom: 20, display: 'flex', alignItems: 'center', gap: 18 }}
+    >
+      <div>
+        <div style={{ fontSize: 13, fontWeight: 700, color: colors.greenDark }}>✓ Pago aplicado — {factura_numero}</div>
+        <div style={{ ...monoFont, fontSize: 12.5, color: colors.text, marginTop: 2 }}>
+          {money(saldo_anterior)} → −{money(monto)} → {money(saldoActual)}
+        </div>
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5, color: colors.textMuted, marginLeft: 'auto' }}>
+        <span style={{ fontWeight: 600, color: colors.textStrong }}>Cobranzas</span>
+        <motion.span initial={{ x: -8, opacity: 0 }} animate={{ x: 0, opacity: 1 }} transition={{ delay: 0.2, ...motionTokens.default }}>──▶</motion.span>
+        <span style={{ fontWeight: 600, color: colors.textStrong }}>Recaudo</span>
+      </div>
+    </motion.div>
+  );
+}
+
+type PuntoTimeline = { date: string | null; label: string; detail?: string; pendiente?: boolean };
+
+/** Timeline premium de la cuenta (sección 26): solo eventos reales de esta
+ * factura (emisión, gestión, correo del cliente); sin inventar conciliación
+ * si aún no ocurrió — se muestra como paso pendiente, sin fecha. */
+function CuentaTimeline({ data }: { data: any }) {
+  const puntos: PuntoTimeline[] = [];
+  if (data.factura?.fecha_emision) puntos.push({ date: data.factura.fecha_emision, label: 'Factura emitida', detail: data.factura.numero });
+  if (data.gestion?.created_at) puntos.push({ date: data.gestion.created_at, label: 'Gestión de cobranza iniciada', detail: data.gestion.prioridad ? `Prioridad ${data.gestion.prioridad}` : undefined });
+  if (data.ultimo_email?.recibido_at) puntos.push({ date: data.ultimo_email.recibido_at, label: 'Cliente respondió', detail: data.ultimo_email.clasificacion ? `TRAZA clasificó: ${data.ultimo_email.clasificacion}` : 'Pendiente de clasificar' });
+
+  puntos.sort((a, b) => (a.date && b.date ? new Date(a.date).getTime() - new Date(b.date).getTime() : 0));
+
+  const clasif = data.ultimo_email?.clasificacion;
+  if (clasif === 'CONFIRMACION_PAGO') {
+    puntos.push({ date: null, label: 'Pendiente de conciliar en Recaudo', pendiente: true });
+  } else if (data.gestion?.fecha_proxima_accion) {
+    puntos.push({ date: null, label: `Próxima acción: ${fecha(data.gestion.fecha_proxima_accion)}`, pendiente: true });
+  }
+
+  if (puntos.length === 0) return <div style={{ fontSize: 13, color: colors.textFaint }}>Sin eventos registrados aún para esta cuenta.</div>;
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column' }}>
+      {puntos.map((p, i) => (
+        <div key={i} style={{ display: 'flex', gap: 12 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', width: 8 }}>
+            <div style={{ width: 8, height: 8, borderRadius: '50%', background: p.pendiente ? '#fff' : colors.blue, border: p.pendiente ? `1.5px solid ${colors.textFaint}` : 'none', flexShrink: 0 }} />
+            {i < puntos.length - 1 && <div style={{ width: 1, flex: 1, minHeight: 22, background: colors.border }} />}
+          </div>
+          <div style={{ paddingBottom: 16 }}>
+            <div style={{ fontSize: 11.5, color: colors.textFaint }}>{p.date ? fechaHora(p.date) : '—'}</div>
+            <div style={{ fontSize: 13, color: p.pendiente ? colors.textMuted : colors.text, fontStyle: p.pendiente ? 'italic' : 'normal' }}>{p.label}</div>
+            {p.detail && <div style={{ ...monoFont, fontSize: 12, color: colors.textMuted, marginTop: 1 }}>{p.detail}</div>}
+          </div>
+        </div>
+      ))}
+    </div>
   );
 }
 
