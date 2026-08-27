@@ -1,9 +1,10 @@
 import { money, fecha } from '../../lib/api';
+import { parsearPeriodo, detectarOperacion, enRango, sumar, promedio, agruparYSumar } from '../../lib/queryEngine';
 
 export type Caso = {
   id: string; codigo: string; prioridad: string; cliente_nombre: string | null; factura_numero: string | null;
   factura_id: string | null; tipo_caso: string; asunto: string; descripcion: string | null;
-  impacto_monto: number | null; estado: string; factura_fuente: string | null;
+  impacto_monto: number | null; estado: string; factura_fuente: string | null; created_at?: string;
 };
 export type Validacion = {
   id: string; cliente_nombre: string | null; tipo_validacion: string; resultado: string;
@@ -24,7 +25,12 @@ export type Resumen = {
   control: { casos_abiertos: number; casos_criticos: number };
 };
 
-export type IntentContext = { resumen: Resumen | null; casos: Caso[]; validaciones: Validacion[]; emision: Emision[]; comunicaciones: Comunicacion[] };
+export type FacturaAmplia = {
+  id: string; numero: string; cliente_nombre: string | null; monto: number; tipo_factura: string;
+  estado: string; fecha_emision: string; fecha_vencimiento: string; fuente: string | null;
+};
+
+export type IntentContext = { resumen: Resumen | null; casos: Caso[]; validaciones: Validacion[]; emision: Emision[]; comunicaciones: Comunicacion[]; facturasTodas: FacturaAmplia[] };
 
 export type RankingItem = { label: string; value: string; sub?: string };
 export type ResultItem = Record<string, any>;
@@ -277,6 +283,75 @@ const REFINAMIENTOS: { patron: RegExp; aplicar: (items: ResultItem[], tipo: stri
   },
 ];
 
+/** Fallback generico: cuando ninguna regla de frase fija coincide, intenta
+ * resolver la pregunta calculando sobre los datasets reales (facturas o
+ * casos) con periodo + operacion (contar/sumar/promediar/top/max/min)
+ * detectados por queryEngine. Esto es lo que permite responder variaciones
+ * libres ("cuanto se facturo en julio", "promedio de las aciclicas de
+ * agosto", "top 5 clientes por monto en junio") sin una regla por frase. */
+function resolverConsultaGenerica(texto: string, ctx: IntentContext): IntentResult | null {
+  const t = texto.toLowerCase();
+  if (!/factur|caso|validac|cliente/i.test(t)) return null;
+
+  const periodo = parsearPeriodo(t);
+  const operacion = detectarOperacion(t);
+  const esCasos = /\bcasos?\b/i.test(t) && !/\bfacturas?\b/i.test(t);
+  const soloAciclicas = /ac[ií]clic/i.test(t);
+  const soloCiclicas = /\bc[ií]clic/i.test(t) && !/ac[ií]clic/i.test(t);
+
+  if (esCasos) {
+    let casos = ctx.casos.filter((c) => c.estado !== 'DESCARTADO');
+    if (periodo) casos = casos.filter((c) => enRango(c.created_at, periodo));
+    const etiquetaPeriodo = periodo ? ` en ${periodo.etiqueta}` : '';
+
+    if (operacion.tipo === 'top') {
+      const grupos = agruparYSumar(casos, (c) => c.cliente_nombre || 'Sin cliente', (c) => c.impacto_monto || 0);
+      return {
+        titulo: `Top ${operacion.n} clientes con más casos detectados${etiquetaPeriodo}.`,
+        ranking: grupos.slice(0, operacion.n).map((g) => ({ label: g.clave, value: `${g.cantidad} caso${g.cantidad === 1 ? '' : 's'}`, sub: money(g.total) })),
+      };
+    }
+    if (operacion.tipo === 'sumar') {
+      return { titulo: `El impacto económico de los ${casos.length} casos${etiquetaPeriodo} suma ${money(sumar(casos.map((c) => c.impacto_monto || 0)))}.` };
+    }
+    if (operacion.tipo === 'promediar') {
+      return { titulo: `El impacto promedio por caso${etiquetaPeriodo} es ${money(promedio(casos.map((c) => c.impacto_monto || 0)))}, sobre ${casos.length} casos.` };
+    }
+    return { titulo: `Hubo ${casos.length} casos detectados${etiquetaPeriodo}.` };
+  }
+
+  // Dataset por defecto: facturas (todas, cualquier estado)
+  let facturas = ctx.facturasTodas;
+  if (periodo) facturas = facturas.filter((f) => enRango(f.fecha_emision, periodo));
+  if (soloAciclicas) facturas = facturas.filter((f) => f.tipo_factura === 'ACICLICA');
+  else if (soloCiclicas) facturas = facturas.filter((f) => f.tipo_factura === 'CICLICA');
+  const etiquetaPeriodo = periodo ? ` en ${periodo.etiqueta}` : '';
+  if (facturas.length === 0 && ctx.facturasTodas.length === 0) return null; // dataset aun no cargo
+
+  if (operacion.tipo === 'top') {
+    const grupos = agruparYSumar(facturas, (f) => f.cliente_nombre || 'Sin cliente', (f) => f.monto);
+    return {
+      titulo: `Top ${operacion.n} clientes por monto facturado${etiquetaPeriodo}.`,
+      ranking: grupos.slice(0, operacion.n).map((g) => ({ label: g.clave, value: money(g.total), sub: `${g.cantidad} factura${g.cantidad === 1 ? '' : 's'}` })),
+    };
+  }
+  if (operacion.tipo === 'sumar') {
+    return { titulo: `Se facturaron ${money(sumar(facturas.map((f) => f.monto)))} en ${facturas.length} documento${facturas.length === 1 ? '' : 's'}${etiquetaPeriodo}.` };
+  }
+  if (operacion.tipo === 'promediar') {
+    return { titulo: `El monto promedio por factura${etiquetaPeriodo} es ${money(promedio(facturas.map((f) => f.monto)))}, sobre ${facturas.length} documentos.` };
+  }
+  if (operacion.tipo === 'maximo' && facturas.length > 0) {
+    const top = [...facturas].sort((a, b) => b.monto - a.monto)[0];
+    return { titulo: `La factura de mayor monto${etiquetaPeriodo} es ${top.numero} (${top.cliente_nombre}) por ${money(top.monto)}.` };
+  }
+  if (operacion.tipo === 'minimo' && facturas.length > 0) {
+    const bottom = [...facturas].sort((a, b) => a.monto - b.monto)[0];
+    return { titulo: `La factura de menor monto${etiquetaPeriodo} es ${bottom.numero} (${bottom.cliente_nombre}) por ${money(bottom.monto)}.` };
+  }
+  return { titulo: `Hubo ${facturas.length} facturas${etiquetaPeriodo}.`, bullets: [`Monto total: ${money(sumar(facturas.map((f) => f.monto)))}`] };
+}
+
 export function interpretarPreguntaFacturacion(pregunta: string, ctx: IntentContext, ultimoContexto: { tipo: string; items: ResultItem[] } | null): IntentResult | null {
   const t = pregunta.trim();
   for (const regla of REGLAS) {
@@ -290,6 +365,8 @@ export function interpretarPreguntaFacturacion(pregunta: string, ctx: IntentCont
       }
     }
   }
+  const generica = resolverConsultaGenerica(t, ctx);
+  if (generica) return generica;
   return null;
 }
 

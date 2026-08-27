@@ -26,6 +26,11 @@ type Comunicacion = {
   clasificacion: string; asunto: string; recibido_at: string;
 };
 
+type FacturaAmplia = {
+  id: string; numero: string; cliente_nombre: string | null; monto: number; tipo_factura: string;
+  estado: string; fecha_emision: string; fecha_vencimiento: string; fuente: string | null;
+};
+
 type Validacion = {
   id: string; cliente_nombre: string | null; tipo_validacion: string; resultado: string;
   observacion: string | null; created_at: string; factura_id: string | null; factura_numero: string | null;
@@ -63,6 +68,7 @@ export default function Facturacion() {
   const [comunicaciones, setComunicaciones] = useState<Comunicacion[]>([]);
   const [casosTodos, setCasosTodos] = useState<Caso[]>([]);
   const [validacionesTodas, setValidacionesTodas] = useState<Validacion[]>([]);
+  const [facturasTodas, setFacturasTodas] = useState<FacturaAmplia[]>([]);
   const [drawerCaso, setDrawerCaso] = useState<Caso | null>(null);
   const [facturaDetalle, setFacturaDetalle] = useState<FacturaDetalle | null>(null);
   const [facturaDetalleLoading, setFacturaDetalleLoading] = useState(false);
@@ -103,7 +109,7 @@ export default function Facturacion() {
     Promise.all([
       api.get<Resumen>('/api/facturacion/resumen'),
       api.get<Caso[]>(`/api/facturacion/casos?estado=${filtroEstadoCaso}`),
-      api.get<Validacion[]>(`/api/facturacion/validaciones?limit=100&resultado=${filtroResultado}`),
+      api.get<Validacion[]>(`/api/facturacion/validaciones?limit=300&resultado=${filtroResultado}`),
       api.get<Emision[]>(`/api/facturacion/emision?tipo_factura=${filtroTipoFactura}`),
     ])
       .then(([r, c, v, e]) => { setResumen(r); setCasos(c); setValidaciones(v); setEmision(e); })
@@ -117,6 +123,7 @@ export default function Facturacion() {
     api.get<Caso[]>('/api/facturacion/casos?estado=TODOS&limit=300').then(setCasosTodos).catch(() => {});
     api.get<Validacion[]>('/api/facturacion/validaciones?limit=300&resultado=TODOS').then(setValidacionesTodas).catch(() => {});
     api.get<Comunicacion[]>('/api/facturacion/comunicaciones').then(setComunicaciones).catch(() => {});
+    api.get<FacturaAmplia[]>('/api/facturacion/facturas?limit=3000').then(setFacturasTodas).catch(() => {});
   };
 
   useEffect(() => {
@@ -196,7 +203,7 @@ export default function Facturacion() {
         <div style={{ background: '#fff', border: `1px solid ${colors.border}`, borderRadius: 10, padding: 24 }}>
           <CrearFacturaDesdeCorreo
             onVolver={() => setCrearAbierto(false)}
-            onPreparada={() => { setCrearAbierto(false); mostrarAviso('green', 'Factura preparada para revisión.'); cargar(); }}
+            onPreparada={() => { setCrearAbierto(false); mostrarAviso('green', 'Factura preparada para revisión.'); cargar(); setTimeout(() => irA('validaciones'), 150); }}
             onCasoDetectado={() => { setCrearAbierto(false); mostrarAviso('amber', 'Caso enviado a revisión. Revísalo en "Casos detectados".'); }}
           />
         </div>
@@ -296,7 +303,7 @@ export default function Facturacion() {
           <div ref={refEmision} style={{ borderRadius: 10, transition: 'box-shadow 200ms', boxShadow: destacado === 'emision' ? `0 0 0 3px ${colors.green}55` : 'none' }}>
           <EmisionYConsulta
             emision={emision} filtroTipoFactura={filtroTipoFactura} onFiltro={setFiltroTipoFactura} onEmitir={emitir}
-            contexto={{ resumen, casos: casosTodos, validaciones: validacionesTodas, emision, comunicaciones }}
+            contexto={{ resumen, casos: casosTodos, validaciones: validacionesTodas, emision, comunicaciones, facturasTodas }}
           />
           </div>
         </div>

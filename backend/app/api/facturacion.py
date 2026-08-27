@@ -18,6 +18,30 @@ def resumen(db: Session = Depends(get_db)):
     return facturacion.resumen_ciclo(db)
 
 
+@router.get("/facturas")
+def listar_facturas(limit: int = 3000, db: Session = Depends(get_db)):
+    """Dataset amplio (todas las facturas, cualquier estado) para que el
+    asistente de Facturacion pueda calcular agregados reales por periodo
+    (cuantas/cuanto se facturo en un mes, promedios, etc.), no solo sobre
+    las pendientes de emision."""
+    rows = (
+        db.query(FacturaB2B, ClienteB2B.razon_social)
+        .join(ClienteB2B, FacturaB2B.cliente_id == ClienteB2B.id)
+        .order_by(FacturaB2B.fecha_emision.desc())
+        .limit(limit)
+        .all()
+    )
+    out = []
+    for f, razon_social in rows:
+        out.append({
+            "id": str(f.id), "numero": f.numero, "cliente_nombre": razon_social,
+            "monto": float(f.monto), "tipo_factura": f.tipo_factura, "estado": f.estado,
+            "fecha_emision": to_jsonable(f.fecha_emision), "fecha_vencimiento": to_jsonable(f.fecha_vencimiento),
+            "fuente": f.fuente,
+        })
+    return out
+
+
 @router.get("/validaciones")
 def validaciones(resultado: str | None = None, limit: int = 50, offset: int = 0, db: Session = Depends(get_db)):
     q = (
@@ -76,12 +100,17 @@ def crear_factura_desde_correo(body: CrearFacturaCorreoBody, db: Session = Depen
         except ValueError:
             fecha = None
     tipo_factura = body.tipo_factura if body.tipo_factura in ("CICLICA", "ACICLICA") else "ACICLICA"
-    factura = facturacion.crear_factura_desde_correo(
-        db, cliente_nombre=body.cliente_nombre, ruc=body.ruc, monto=Decimal(str(body.monto)),
-        servicio=body.servicio, periodo=body.periodo, orden=body.orden,
-        fecha_emision=fecha, tipo_factura=tipo_factura,
-    )
-    db.commit()
+    try:
+        factura = facturacion.crear_factura_desde_correo(
+            db, cliente_nombre=body.cliente_nombre, ruc=body.ruc, monto=Decimal(str(body.monto)),
+            servicio=body.servicio, periodo=body.periodo, orden=body.orden,
+            fecha_emision=fecha, tipo_factura=tipo_factura,
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
     return {"factura_id": str(factura.id), "factura_numero": factura.numero, "cliente_nombre": body.cliente_nombre}
 
 

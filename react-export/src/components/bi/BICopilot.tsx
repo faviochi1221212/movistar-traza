@@ -3,6 +3,7 @@ import { colors } from '../../lib/styles';
 import { api, money, fecha } from '../../lib/api';
 import BIResultTable, { riesgoBadge, type ResultTableSpec } from './BIResultTable';
 import type { ChartSpec } from './charts';
+import { detectarOperacion, sumar, promedio, agruparYSumar } from '../../lib/queryEngine';
 
 type CarteraRow = { factura_id: string; numero?: string; cliente_id: string; razon_social: string; saldo_pendiente: number; fecha_vencimiento: string; dias_vencidos: number; aging: string };
 type RiesgoCliente = { cliente_id: string; razon_social: string; probabilidad_pago: number; nivel_riesgo: string; saldo_pendiente: number; dias_vencidos: number };
@@ -177,6 +178,66 @@ export default function BICopilot({
           ],
           rows: altas,
         } : undefined,
+      };
+    }
+
+    // Fallback generico: top-N / contar / sumar / promediar sobre cartera y
+    // riesgo cuando ninguna de las 5 preguntas de demo coincide exactamente.
+    const operacion = detectarOperacion(texto);
+    if (/cr[ií]tico|prioriz|mayor riesgo|peor(es)?\s+client/i.test(texto)) {
+      log('Cruzando riesgo y saldo pendiente');
+      const porRiesgo = new Map(riesgo.map((r) => [r.cliente_id, r]));
+      const orden = { ALTO: 0, MEDIO: 1, BAJO: 2 } as Record<string, number>;
+      const criticos = [...cartera]
+        .reduce((acc: Map<string, number>, c) => acc.set(c.cliente_id, (acc.get(c.cliente_id) || 0) + Number(c.saldo_pendiente)), new Map<string, number>());
+      const lista = Array.from(criticos.entries()).map(([cliente_id, saldo]) => {
+        const r = porRiesgo.get(cliente_id);
+        return { cliente_id, razon_social: r?.razon_social || cartera.find((c) => c.cliente_id === cliente_id)?.razon_social || '—', saldo, nivel: r?.nivel_riesgo || 'SIN_EVALUAR' };
+      }).sort((a, b) => (orden[a.nivel] ?? 3) - (orden[b.nivel] ?? 3) || b.saldo - a.saldo);
+      const n = operacion.tipo === 'top' ? operacion.n! : 10;
+      log('Respuesta generada');
+      return {
+        role: 'ai', timestamp: horaAhora(),
+        text: `Los ${n} clientes más críticos combinan mayor riesgo y mayor saldo pendiente.`,
+        tabla: {
+          csvNombre: 'clientes_criticos',
+          columns: [
+            { key: 'razon_social', label: 'Cliente' },
+            { key: 'nivel', label: 'Riesgo', render: (r) => { const b = riesgoBadge(r.nivel); return <span style={{ fontSize: 10.5, fontWeight: 600, color: b.fg, background: b.bg, borderRadius: 5, padding: '2px 6px' }}>{b.label}</span>; } },
+            { key: 'saldo', label: 'Saldo pendiente', align: 'right', render: (r) => money(r.saldo) },
+          ],
+          rows: lista.slice(0, n),
+        },
+      };
+    }
+    if (operacion.tipo === 'sumar' && /cartera|pendiente|deuda/i.test(texto)) {
+      log('Sumando cartera pendiente');
+      const total = sumar(cartera.map((c) => c.saldo_pendiente));
+      log('Respuesta generada');
+      return { role: 'ai', timestamp: horaAhora(), text: `La cartera pendiente total es ${money(total)} en ${cartera.length} documentos.` };
+    }
+    if (operacion.tipo === 'promediar' && /cartera|pendiente|deuda|saldo/i.test(texto)) {
+      log('Calculando promedio');
+      const prom = promedio(cartera.map((c) => c.saldo_pendiente));
+      log('Respuesta generada');
+      return { role: 'ai', timestamp: horaAhora(), text: `El saldo pendiente promedio por factura es ${money(prom)}, sobre ${cartera.length} documentos.` };
+    }
+    if (operacion.tipo === 'top' && /client/i.test(texto)) {
+      log('Agrupando por cliente');
+      const grupos = agruparYSumar(cartera, (c) => c.razon_social, (c) => c.saldo_pendiente);
+      log('Respuesta generada');
+      return {
+        role: 'ai', timestamp: horaAhora(),
+        text: `Top ${operacion.n} clientes por saldo pendiente.`,
+        tabla: {
+          csvNombre: 'top_clientes_saldo',
+          columns: [
+            { key: 'clave', label: 'Cliente' },
+            { key: 'cantidad', label: 'Facturas', align: 'right' },
+            { key: 'total', label: 'Saldo', align: 'right', render: (r) => money(r.total) },
+          ],
+          rows: grupos.slice(0, operacion.n),
+        },
       };
     }
 

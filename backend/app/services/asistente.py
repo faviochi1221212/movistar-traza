@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from app.integrations.dify import get_dify_assistant
 from app.models.models import ClienteB2B
 from app.services import auditoria, bi, cobranzas, facturacion
+from app.services.query_engine import resolver_consulta_generica
 
 FUERA_DE_ALCANCE = (
     "TRAZA esta enfocado en Facturacion, Cobranzas, Recaudo y BI del ciclo de ingreso B2B. "
@@ -108,21 +109,29 @@ def _clasificar_pregunta(pregunta: str) -> str | None:
 
 
 def responder(db: Session, pregunta: str) -> dict:
-    categoria = _clasificar_pregunta(pregunta)
-    if categoria is None:
-        return {"respuesta": FUERA_DE_ALCANCE, "categoria": None, "datos": {}}
-
-    if categoria == "cliente":
-        match = re.search(CLIENTE_ID_PATTERN, pregunta, re.I)
-        texto = match.group(0) if match else pregunta
-        contexto, datos = _consultar_cliente(db, texto)
+    # Preguntas con una operacion reconocible (contar/sumar/promediar/top/
+    # maximo/minimo) se resuelven primero con calculo real y especifico sobre
+    # Supabase -- son mas precisas que el resumen fijo por categoria de abajo.
+    generico = resolver_consulta_generica(db, pregunta)
+    if generico is not None:
+        contexto, datos = generico
+        categoria = "calculo"
     else:
-        handler = {
-            "cartera": _consultar_cartera, "riesgo": _consultar_riesgo,
-            "conciliacion": _consultar_conciliacion, "recupero": _consultar_recupero,
-            "auditoria": _consultar_auditoria, "facturacion": _consultar_facturacion,
-        }[categoria]
-        contexto, datos = handler(db)
+        categoria = _clasificar_pregunta(pregunta)
+        if categoria is None:
+            return {"respuesta": FUERA_DE_ALCANCE, "categoria": None, "datos": {}}
+
+        if categoria == "cliente":
+            match = re.search(CLIENTE_ID_PATTERN, pregunta, re.I)
+            texto = match.group(0) if match else pregunta
+            contexto, datos = _consultar_cliente(db, texto)
+        else:
+            handler = {
+                "cartera": _consultar_cartera, "riesgo": _consultar_riesgo,
+                "conciliacion": _consultar_conciliacion, "recupero": _consultar_recupero,
+                "auditoria": _consultar_auditoria, "facturacion": _consultar_facturacion,
+            }[categoria]
+            contexto, datos = handler(db)
 
     respuesta_natural = get_dify_assistant().preguntar(pregunta, contexto)
     respuesta_final = respuesta_natural or contexto  # fallback local si Dify no esta configurado

@@ -179,7 +179,7 @@ export default function CobranzasRecaudo() {
           clasificando={clasificando} conciliando={conciliando}
           onClasificar={clasificar} onConciliar={conciliar} onRevisarManual={revisarManualmente}
         />
-        <CopilotColumn cartera={cartera} riesgoPorCliente={riesgoPorCliente} onUsarComoFiltro={(desde, hasta) => { setFiltroCopiloto({ desde, hasta }); mostrarAviso('Filtro aplicado a la gestión de cobranza.'); }} />
+        <CopilotColumn cartera={cartera} emails={emails} movimientos={movimientos} riesgoPorCliente={riesgoPorCliente} onUsarComoFiltro={(desde, hasta) => { setFiltroCopiloto({ desde, hasta }); mostrarAviso('Filtro aplicado a la gestión de cobranza.'); }} />
       </div>
 
       <GestionDrawer facturaId={gestionFacturaId} onClose={() => setGestionFacturaId(null)} onCambio={cargar} />

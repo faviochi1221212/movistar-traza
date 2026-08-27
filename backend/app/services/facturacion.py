@@ -126,6 +126,16 @@ def crear_factura_desde_correo(
     f_emision = fecha_emision or datetime.now(timezone.utc).date()
     numero = orden or f"F-EMAIL-{int(datetime.now(timezone.utc).timestamp())}"
 
+    # Idempotente: el correo de ejemplo de la demo trae siempre el mismo numero
+    # de orden, asi que reprocesarlo no debe romper con un duplicate key -- se
+    # reutiliza la factura ya creada, igual que validar_factura ya es idempotente.
+    existente = db.query(FacturaB2B).filter(FacturaB2B.sistema == "AGENTE_FACTURACION", FacturaB2B.numero == numero).first()
+    if existente:
+        validar_factura(db, existente, cliente)
+        if existente.tipo_factura == "ACICLICA":
+            crear_solicitud_conformidad(db, existente)
+        return existente
+
     factura = FacturaB2B(
         numero=numero, cliente_id=cliente.id, fuente="CORREO_CLIENTE", sistema="AGENTE_FACTURACION",
         fecha_emision=f_emision, fecha_vencimiento=f_emision + timedelta(days=30),

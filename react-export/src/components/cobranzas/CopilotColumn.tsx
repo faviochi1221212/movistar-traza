@@ -1,9 +1,12 @@
 import { useState } from 'react';
 import { colors } from '../../lib/styles';
 import { api, money, fecha } from '../../lib/api';
+import { parsearPeriodo, detectarOperacion, enRango, sumar, promedio, agruparYSumar } from '../../lib/queryEngine';
 
 type CarteraRow = { factura_id: string; numero: string; cliente_id: string; razon_social: string; saldo_pendiente: number; fecha_vencimiento: string; dias_vencidos: number };
-type Msg = { role: 'user' | 'ai'; text: string; timestamp: string; tabla?: TablaResultado };
+type Email = { id: string; cliente_nombre: string | null; asunto: string; clasificacion: string | null; recibido_at: string };
+type Movimiento = { id: string; fecha_movimiento: string; monto: number; estado: string; cliente_sugerido?: string };
+type Msg = { role: 'user' | 'ai'; text: string; timestamp: string; tabla?: TablaResultado; ranking?: { label: string; value: string; sub?: string }[] };
 type TablaResultado = { filas: CarteraRow[]; desde: string; hasta: string };
 type ActividadItem = { hora: string; texto: string };
 
@@ -20,10 +23,54 @@ function riesgoLabel(nivel: string | undefined): { label: string; fg: string; bg
   return { label: 'Sin evaluar', fg: colors.textFaint, bg: '#F1F4F8' };
 }
 
+/** Fallback generico: periodo + operacion (contar/sumar/promediar/top) sobre
+ * comunicaciones (emails), movimientos conciliados o cartera por cliente. */
+function resolverConsultaGenerica(texto: string, cartera: CarteraRow[], emails: Email[], movimientos: Movimiento[]): { titulo: string; ranking?: { label: string; value: string; sub?: string }[] } | null {
+  const t = texto.toLowerCase();
+  if (!/cobr|comunicaci|correo|movimiento|conciliad|cartera|cliente|deuda|pag[oó]|facturas?\s+.*(vence|pendient)/i.test(t)) return null;
+
+  const periodo = parsearPeriodo(t);
+  const operacion = detectarOperacion(t);
+  const etiquetaPeriodo = periodo ? ` en ${periodo.etiqueta}` : '';
+
+  const esMovimientos = /movimiento|conciliad|cobr[oó]|se\s+(ha\s+)?cobr|cobrado/i.test(t);
+  const esCartera = /deuda|cartera|saldo/i.test(t) && !esMovimientos;
+
+  if (esMovimientos) {
+    let movs = movimientos.filter((m) => m.estado === 'CONCILIADO');
+    if (periodo) movs = movs.filter((m) => enRango(m.fecha_movimiento, periodo));
+    if (operacion.tipo === 'sumar') return { titulo: `Se conciliaron ${money(sumar(movs.map((m) => m.monto)))} en ${movs.length} movimiento${movs.length === 1 ? '' : 's'}${etiquetaPeriodo}.` };
+    if (operacion.tipo === 'promediar') return { titulo: `El monto promedio conciliado${etiquetaPeriodo} es ${money(promedio(movs.map((m) => m.monto)))}, sobre ${movs.length} movimientos.` };
+    return { titulo: `Hubo ${movs.length} movimientos conciliados${etiquetaPeriodo}, por ${money(sumar(movs.map((m) => m.monto)))}.` };
+  }
+
+  if (esCartera || operacion.tipo === 'top') {
+    if (operacion.tipo === 'top') {
+      const grupos = agruparYSumar(cartera, (c) => c.razon_social, (c) => c.saldo_pendiente);
+      return {
+        titulo: `Top ${operacion.n} clientes con mayor deuda pendiente.`,
+        ranking: grupos.slice(0, operacion.n).map((g) => ({ label: g.clave, value: money(g.total), sub: `${g.cantidad} factura${g.cantidad === 1 ? '' : 's'}` })),
+      };
+    }
+    if (operacion.tipo === 'sumar') return { titulo: `La cartera pendiente suma ${money(sumar(cartera.map((c) => c.saldo_pendiente)))} en ${cartera.length} documentos.` };
+    if (operacion.tipo === 'promediar') return { titulo: `El saldo pendiente promedio por factura es ${money(promedio(cartera.map((c) => c.saldo_pendiente)))}.` };
+    return { titulo: `Hay ${cartera.length} documentos en cartera pendiente.` };
+  }
+
+  // Default: comunicaciones ("cobranzas" = correos gestionados). El caso "top"
+  // ya se resolvio arriba (siempre por cartera/deuda, mas util en Cobranzas).
+  let coms = emails;
+  if (periodo) coms = coms.filter((e) => enRango(e.recibido_at, periodo));
+  if (operacion.tipo === 'sumar' || operacion.tipo === 'promediar') {
+    return { titulo: `Las comunicaciones no tienen un monto asociado directamente; hubo ${coms.length} comunicaciones de cobranza${etiquetaPeriodo}.` };
+  }
+  return { titulo: `Hubo ${coms.length} comunicaciones de cobranza${etiquetaPeriodo}.` };
+}
+
 export default function CopilotColumn({
-  cartera, riesgoPorCliente, onUsarComoFiltro,
+  cartera, emails, movimientos, riesgoPorCliente, onUsarComoFiltro,
 }: {
-  cartera: CarteraRow[]; riesgoPorCliente: Map<string, string>; onUsarComoFiltro: (desde: string, hasta: string) => void;
+  cartera: CarteraRow[]; emails: Email[]; movimientos: Movimiento[]; riesgoPorCliente: Map<string, string>; onUsarComoFiltro: (desde: string, hasta: string) => void;
 }) {
   const [tab, setTab] = useState<'copiloto' | 'actividad'>('copiloto');
   const [msgs, setMsgs] = useState<Msg[]>([]);
@@ -71,10 +118,17 @@ export default function CopilotColumn({
         setMsgs((m) => [...m, { role: 'ai', text: texto, timestamp: horaAhora(), tabla }]);
         log('Respuesta generada');
       } else {
-        log('Consultando datos de cobranza');
-        const r = await api.post<{ respuesta: string }>('/api/chat', { pregunta: q });
-        log('Respuesta generada');
-        setMsgs((m) => [...m, { role: 'ai', text: r.respuesta, timestamp: horaAhora() }]);
+        const generica = resolverConsultaGenerica(q, cartera, emails, movimientos);
+        if (generica) {
+          log('Calculando sobre datos reales');
+          setMsgs((m) => [...m, { role: 'ai', text: generica.titulo, timestamp: horaAhora(), ranking: generica.ranking }]);
+          log('Respuesta generada');
+        } else {
+          log('Consultando datos de cobranza');
+          const r = await api.post<{ respuesta: string }>('/api/chat', { pregunta: q });
+          log('Respuesta generada');
+          setMsgs((m) => [...m, { role: 'ai', text: r.respuesta, timestamp: horaAhora() }]);
+        }
       }
     } catch (err) {
       setMsgs((m) => [...m, { role: 'ai', text: `No pude obtener una respuesta (${String(err)}).`, timestamp: horaAhora() }]);
@@ -147,6 +201,16 @@ export default function CopilotColumn({
                     onExportar={() => exportarCsv(m.tabla!)}
                     onUsarComoFiltro={() => { onUsarComoFiltro(m.tabla!.desde, m.tabla!.hasta); log('Filtro aplicado a la gestión de cobranza'); }}
                   />
+                )}
+                {m.ranking && m.ranking.length > 0 && (
+                  <div style={{ marginTop: 8, background: '#fff', border: `1px solid ${colors.border}`, borderRadius: 8, padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    {m.ranking.map((r, ri) => (
+                      <div key={ri} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 11.5 }}>
+                        <span style={{ color: colors.text, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{ri + 1}. {r.label}</span>
+                        <span style={{ color: colors.textMuted, textAlign: 'right', flexShrink: 0, whiteSpace: 'nowrap' }}>{r.value}{r.sub ? ` · ${r.sub}` : ''}</span>
+                      </div>
+                    ))}
+                  </div>
                 )}
               </div>
             ))}
